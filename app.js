@@ -951,8 +951,10 @@ function renderFiveOverview(game, acc) {
     const p = pity.get(r.id) ?? '?';
     const icon = itemIcon(game, r.name, r.type);
     const iconHtml = icon ? `<img class="five-item-icon" src="${icon}" alt="" onerror="this.style.display='none'">` : '';
-    // 崩铁角色卡片可点击打开配队推荐
-    const clickable = game === 'hsr' && r.type === '角色' ? ' team-char' : '';
+    // 崩铁角色卡片可点击打开配队推荐；原神角色卡片可点击打开米游社攻略
+    let clickable = '';
+    if (game === 'hsr' && r.type === '角色') clickable = ' team-char';
+    else if ((game === 'genshin' || game === 'wuwa') && r.type === '角色') clickable = ' guide-char';
     return `<div class="five-item${clickable}"${clickable ? ` data-name="${r.name.replace(/"/g, '&quot;')}"` : ''}>
       ${iconHtml}
       <div class="five-item-name" style="color:${nameColor(r.name)}">${r.name}</div>
@@ -964,10 +966,29 @@ function renderFiveOverview(game, acc) {
     </div>`;
   }).join('');
 
-  // 崩铁角色卡片点击 → 打开配队推荐弹窗
+  // 崩铁角色卡片：左键打开米游社攻略，右键打开配队推荐弹窗
   if (game === 'hsr') {
     grid.querySelectorAll('.team-char').forEach((el) => {
-      el.addEventListener('click', () => openTeamRec(el.dataset.name));
+      el.addEventListener('click', () => {
+        const name = el.dataset.name;
+        api.openExternal(`https://www.miyoushe.com/sr/search?keyword=${encodeURIComponent(name + '攻略')}`);
+      });
+      el.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        openTeamRec(el.dataset.name);
+      });
+    });
+  }
+  // 原神 / 鸣潮角色卡片点击 → 外置浏览器打开攻略搜索
+  if (game === 'genshin' || game === 'wuwa') {
+    const base = game === 'genshin'
+      ? `https://www.miyoushe.com/ys/search?keyword=`
+      : `https://www.kurobbs.com/mc/search?q=`;
+    grid.querySelectorAll('.guide-char').forEach((el) => {
+      el.addEventListener('click', () => {
+        const name = el.dataset.name;
+        api.openExternal(`${base}${encodeURIComponent(name + '攻略')}`);
+      });
     });
   }
 
@@ -1278,6 +1299,11 @@ async function openTeamRec(charName) {
 function closeTeamRec() {
   $('#teamRecMask').hidden = true;
 }
+
+// 点击遮罩空白区域关闭配队弹窗
+$('#teamRecMask').addEventListener('click', (e) => {
+  if (e.target === $('#teamRecMask')) closeTeamRec();
+});
 
 // Esc 关闭配队弹窗
 document.addEventListener('keydown', (e) => {
@@ -1971,6 +1997,9 @@ document.addEventListener('click', (e) => {
   if (act === 'cacheDir' && GAME_URL_API[game]) return openGameCacheDir(game);
   if (act === 'openDir') return api.openDataDir();
   if (act === 'pickDir') return pickDataDir();
+  if (act === 'pickLogDir' && game) return pickGameLogDir(game);
+  if (act === 'resetLogDir' && game) return resetGameLogDir(game);
+  if (act === 'openLogDir' && game) return openGameLogDir(game);
   if (act === 'addAccount') return toast('请前往对应游戏页面点击「导入」载入数据文件');
   if (act === 'checkUpdate') return checkUpdate();
   if (act === 'startUpdate') return startUpdate();
@@ -2151,6 +2180,7 @@ const ICONS = new Proxy({}, {
   }, 60 * 1000);
 
   refreshDataDirInput();
+  refreshGameLogDirs();
   applyAutoUpdate(autoUpdateEnabled);
   applyAutoUpdateOnSwitch(autoUpdateOnSwitchEnabled);
   if (window.versions) {
@@ -2170,6 +2200,36 @@ async function pickDataDir() {
   await api.saveSettings({ dataDir: dir });
   await refreshDataDirInput();
   toast('数据目录已更改，重启应用后生效');
+}
+
+// 游戏日志目录（原神 / 崩铁 / 绝区零 / 鸣潮）
+const LOG_DIR_GAMES = ['genshin', 'hsr', 'zzz', 'wuwa'];
+async function refreshGameLogDirs() {
+  for (const g of LOG_DIR_GAMES) {
+    const input = document.getElementById(`logDir-${g}`);
+    if (!input) continue;
+    try {
+      const info = await api.getGameLogDir(g);
+      input.value = info.current || '未检测到，请手动浏览选择';
+      input.title = info.current || '';
+    } catch { input.value = '读取失败'; }
+  }
+}
+async function pickGameLogDir(game) {
+  const dir = await api.pickGameLogDir(game);
+  if (!dir) return;
+  await api.setGameLogDir(game, dir);
+  await refreshGameLogDirs();
+  toast('日志目录已更新');
+}
+async function resetGameLogDir(game) {
+  await api.resetGameLogDir(game);
+  await refreshGameLogDirs();
+  toast('已恢复默认日志目录');
+}
+async function openGameLogDir(game) {
+  const res = await api.openGameLogDir(game);
+  if (!res?.ok) toast(res?.error || '打开失败');
 }
 
 // 手动检查更新（自动检查在启动时由主进程执行）

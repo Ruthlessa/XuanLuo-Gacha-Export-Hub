@@ -60,6 +60,73 @@ function writeConfig(cfg) {
   }, null, 2));
 }
 
+// ---------- 游戏日志目录（可在设置中自定义） ----------
+// 自动检测结果与用户手动设置统一保存在 settings.gameLogDirs
+function getGameLogDir(game) {
+  try {
+    const dirs = readConfig().settings.gameLogDirs || {};
+    return dirs[game] || '';
+  } catch { return ''; }
+}
+function saveGameLogDir(game, dir) {
+  try {
+    const cfg = readConfig();
+    const dirs = { ...(cfg.settings.gameLogDirs || {}) };
+    if (dir) dirs[game] = dir; else delete dirs[game];
+    cfg.settings = { ...cfg.settings, gameLogDirs: dirs };
+    writeConfig(cfg);
+  } catch { /* 忽略写入失败 */ }
+}
+
+// 纯检测逻辑（不读写缓存）
+function detectGenshinLogDir() {
+  const home = app.getPath('home');
+  const candidates = ['原神', 'Genshin Impact']
+    .map((n) => path.join(home, 'AppData', 'LocalLow', 'miHoYo', n));
+  return candidates.find((d) => fs.existsSync(path.join(d, 'output_log.txt'))) || '';
+}
+function detectHsrLogDir() {
+  const home = app.getPath('home');
+  const candidates = [
+    path.join(home, 'AppData', 'LocalLow', 'miHoYo', '崩坏：星穹铁道'),
+    path.join(home, 'AppData', 'LocalLow', 'Cognosphere', 'Star Rail'),
+  ];
+  return candidates.find((d) => fs.existsSync(path.join(d, 'Player.log'))) || '';
+}
+function detectZzzLogDir() {
+  const home = app.getPath('home');
+  const vendors = ['miHoYo', 'Cognosphere'];
+  const names = ['绝区零', 'ZenlessZoneZero', 'Zenless Zone Zero'];
+  const candidates = [];
+  vendors.forEach((v) => names.forEach((n) => candidates.push(path.join(home, 'AppData', 'LocalLow', v, n))));
+  return candidates.find((d) => fs.existsSync(path.join(d, 'Player.log')) || fs.existsSync(path.join(d, 'output_log.txt'))) || '';
+}
+function detectWuwaLogDir() {
+  const drives = Array.from({ length: 24 }, (_, i) => String.fromCharCode(67 + i)); // C ~ Z
+  const candidates = drives.map((c) => path.join(`${c}:\\`, 'Wuthering Waves', 'Wuthering Waves Game'));
+  return candidates.find((d) => fs.existsSync(path.join(d, 'Client', 'Saved', 'Logs'))) || '';
+}
+function detectLogDir(game) {
+  switch (game) {
+    case 'genshin': return detectGenshinLogDir();
+    case 'hsr': return detectHsrLogDir();
+    case 'zzz': return detectZzzLogDir();
+    case 'wuwa': return detectWuwaLogDir();
+    default: return '';
+  }
+}
+// 当前日志目录：已保存则直接返回，否则自动检测并写入 gameLogDirs
+function currentLogDir(game) {
+  const saved = getGameLogDir(game);
+  if (saved) return saved;
+  const detected = detectLogDir(game);
+  if (detected) saveGameLogDir(game, detected);
+  return detected;
+}
+function defaultLogDir(game) {
+  return detectLogDir(game);
+}
+
 // UIGF v4.1 顶层游戏键
 const GAME_BIZ = { genshin: 'hk4e', hsr: 'hkrpg', zzz: 'nap' };
 
@@ -168,6 +235,42 @@ ipcMain.handle('dialog:pickDir', async () => {
   return res.filePaths[0];
 });
 
+// ---------- 游戏日志目录（设置中可自定义） ----------
+ipcMain.handle('gamelog:get', (e, game) => {
+  return { current: currentLogDir(game) };
+});
+
+ipcMain.handle('gamelog:set', (e, game, dir) => {
+  saveGameLogDir(game, dir);
+  return true;
+});
+
+ipcMain.handle('gamelog:reset', (e, game) => {
+  // 清除已保存路径并重新自动检测写入
+  saveGameLogDir(game, '');
+  const detected = detectLogDir(game);
+  if (detected) saveGameLogDir(game, detected);
+  return true;
+});
+
+ipcMain.handle('gamelog:pick', async (e, game) => {
+  const cur = currentLogDir(game);
+  const res = await dialog.showOpenDialog({
+    title: `选择${GAMES[game]?.name || game}日志目录`,
+    properties: ['openDirectory'],
+    defaultPath: fs.existsSync(cur) ? cur : app.getPath('home'),
+  });
+  if (res.canceled || !res.filePaths.length) return null;
+  return res.filePaths[0];
+});
+
+ipcMain.handle('gamelog:open', (e, game) => {
+  const cur = currentLogDir(game);
+  if (!fs.existsSync(cur)) return { error: '目录不存在，请先运行一次游戏或检查路径' };
+  shell.openPath(cur);
+  return { ok: true };
+});
+
 // ---------- UIGF v4.1 导入 ----------
 ipcMain.handle('uigf:import', async (e, game) => {
   const res = await dialog.showOpenDialog({
@@ -252,9 +355,11 @@ function fixAuthkey(url) {
 let lastCacheDir = null;
 function readGenshinUrl() {
   const home = app.getPath('home');
-  const logFiles = ['原神', 'Genshin Impact']
-    .map((n) => path.join(home, 'AppData', 'LocalLow', 'miHoYo', n, 'output_log.txt'))
-    .filter((f) => fs.existsSync(f));
+  const dirs = ['原神', 'Genshin Impact']
+    .map((n) => path.join(home, 'AppData', 'LocalLow', 'miHoYo', n));
+  const custom = getGameLogDir('genshin');
+  if (custom) dirs.unshift(custom);
+  const logFiles = dirs.map((d) => path.join(d, 'output_log.txt')).filter((f) => fs.existsSync(f));
   if (!logFiles.length) return { error: '未找到原神日志文件，请先运行一次游戏' };
 
   for (const logFile of logFiles) {
@@ -359,10 +464,13 @@ ipcMain.handle('genshin:fetch', async (e, knownLatest, link) => {
 let lastHsrCacheDir = null;
 function readHsrUrl() {
   const home = app.getPath('home');
-  const logFiles = [
-    path.join(home, 'AppData', 'LocalLow', 'miHoYo', '崩坏：星穹铁道', 'Player.log'),
-    path.join(home, 'AppData', 'LocalLow', 'Cognosphere', 'Star Rail', 'Player.log'),
-  ].filter((f) => fs.existsSync(f));
+  const dirs = [
+    path.join(home, 'AppData', 'LocalLow', 'miHoYo', '崩坏：星穹铁道'),
+    path.join(home, 'AppData', 'LocalLow', 'Cognosphere', 'Star Rail'),
+  ];
+  const custom = getGameLogDir('hsr');
+  if (custom) dirs.unshift(custom);
+  const logFiles = dirs.map((d) => path.join(d, 'Player.log')).filter((f) => fs.existsSync(f));
   if (!logFiles.length) return { error: '未找到崩铁日志文件（Player.log），请先运行一次游戏' };
 
   for (const logFile of logFiles) {
@@ -482,11 +590,15 @@ function readZzzUrl() {
   const home = app.getPath('home');
   const vendors = ['miHoYo', 'Cognosphere'];
   const names = ['绝区零', 'ZenlessZoneZero', 'Zenless Zone Zero'];
+  const dirs = [];
+  vendors.forEach((v) => names.forEach((n) => dirs.push(path.join(home, 'AppData', 'LocalLow', v, n))));
+  const custom = getGameLogDir('zzz');
+  if (custom) dirs.unshift(custom);
   const logFiles = [];
-  vendors.forEach((v) => names.forEach((n) => {
-    logFiles.push(path.join(home, 'AppData', 'LocalLow', v, n, 'Player.log'));
-    logFiles.push(path.join(home, 'AppData', 'LocalLow', v, n, 'output_log.txt'));
-  }));
+  dirs.forEach((d) => {
+    logFiles.push(path.join(d, 'Player.log'));
+    logFiles.push(path.join(d, 'output_log.txt'));
+  });
   const existing = logFiles.filter((f) => fs.existsSync(f));
   if (!existing.length) return { error: '未找到绝区零日志文件（Player.log），请先运行一次游戏' };
 
@@ -700,10 +812,15 @@ let lastWuwaLogDir = null;
 async function readWuwaUrl() {
   const dirs = [];
   const push = (d) => { if (d && !dirs.includes(d) && wuwaLogCandidates(d).length) dirs.push(d); };
-  push(await readWuwaRegistry());
-  ['C:\\Program Files\\Wuthering Waves', 'C:\\Program Files (x86)\\Wuthering Waves',
-    'D:\\Wuthering Waves', 'E:\\Wuthering Waves'].forEach(push);
-  if (!dirs.length) push(scanWuwaDrives());
+  const custom = getGameLogDir('wuwa');
+  if (custom) {
+    push(custom);
+  } else {
+    push(await readWuwaRegistry());
+    Array.from({ length: 24 }, (_, i) => String.fromCharCode(67 + i)) // C ~ Z
+      .forEach((c) => push(path.join(`${c}:\\`, 'Wuthering Waves', 'Wuthering Waves Game')));
+    if (!dirs.length) push(scanWuwaDrives());
+  }
 
   for (const dir of dirs) {
     for (const logFile of wuwaLogCandidates(dir)) {

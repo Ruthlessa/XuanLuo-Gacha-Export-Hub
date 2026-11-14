@@ -171,7 +171,10 @@
           <div class="stat-row"></div>
           <div class="card five-overview" data-role="fiveOverview">
             <div class="card-head">
-              <h2>五星总览</h2>
+              <div class="card-title-group">
+                <h2>五星总览</h2>
+                <span class="five-tip">点击角色头像跳转对应攻略查询</span>
+              </div>
               <span class="chip" data-role="fivePoolCount">0 个 5★</span>
             </div>
             <div class="five-tabs" data-role="fiveTabs"></div>
@@ -255,7 +258,10 @@
           <div class="stat-row"></div>
           <div class="card five-overview" data-role="fiveOverview">
             <div class="card-head">
-              <h2>五星总览</h2>
+              <div class="card-title-group">
+                <h2>五星总览</h2>
+                <span class="five-tip">左键角色头像打开攻略 · 右键打开配队列表</span>
+              </div>
               <span class="chip" data-role="fivePoolCount">0 个 5★</span>
             </div>
             <div class="five-tabs" data-role="fiveTabs"></div>
@@ -409,7 +415,10 @@
           <div class="stat-row"></div>
           <div class="card five-overview" data-role="fiveOverview">
             <div class="card-head">
-              <h2>五星总览</h2>
+              <div class="card-title-group">
+                <h2>五星总览</h2>
+                <span class="five-tip">点击角色头像跳转对应攻略查询</span>
+              </div>
               <span class="chip" data-role="fivePoolCount">0 个 5★</span>
             </div>
             <div class="five-tabs" data-role="fiveTabs"></div>
@@ -567,6 +576,48 @@
               </div>
             </div>
 
+            <div class="card" id="setGameLog">
+              <div class="card-head"><h2>游戏日志目录</h2></div>
+              <p class="hint">软件从以下目录读取游戏日志以获取抽卡链接。可点击「浏览」自定义，或「恢复默认」改回自动检测路径。</p>
+              <div class="field">
+                <label>原神</label>
+                <div class="row">
+                  <input class="input" id="logDir-genshin" readonly value="加载中…" />
+                  <button class="btn-sm" data-act="pickLogDir" data-game="genshin">浏览…</button>
+                  <button class="btn-sm" data-act="resetLogDir" data-game="genshin">恢复默认</button>
+                  <button class="btn-sm" data-act="openLogDir" data-game="genshin">打开</button>
+                </div>
+              </div>
+              <div class="field">
+                <label>崩坏：星穹铁道</label>
+                <div class="row">
+                  <input class="input" id="logDir-hsr" readonly value="加载中…" />
+                  <button class="btn-sm" data-act="pickLogDir" data-game="hsr">浏览…</button>
+                  <button class="btn-sm" data-act="resetLogDir" data-game="hsr">恢复默认</button>
+                  <button class="btn-sm" data-act="openLogDir" data-game="hsr">打开</button>
+                </div>
+              </div>
+              <div class="field">
+                <label>绝区零</label>
+                <div class="row">
+                  <input class="input" id="logDir-zzz" readonly value="加载中…" />
+                  <button class="btn-sm" data-act="pickLogDir" data-game="zzz">浏览…</button>
+                  <button class="btn-sm" data-act="resetLogDir" data-game="zzz">恢复默认</button>
+                  <button class="btn-sm" data-act="openLogDir" data-game="zzz">打开</button>
+                </div>
+              </div>
+              <div class="field">
+                <label>鸣潮</label>
+                <div class="row">
+                  <input class="input" id="logDir-wuwa" readonly value="加载中…" />
+                  <button class="btn-sm" data-act="pickLogDir" data-game="wuwa">浏览…</button>
+                  <button class="btn-sm" data-act="resetLogDir" data-game="wuwa">恢复默认</button>
+                  <button class="btn-sm" data-act="openLogDir" data-game="wuwa">打开</button>
+                </div>
+                <p class="hint">鸣潮需选择根目录名为「Wuthering Waves Game」的目录。</p>
+              </div>
+            </div>
+
             <div class="card" id="setAccounts">
               <div class="card-head"><h2>账号管理</h2><button class="btn-sm" data-act="addAccount">添加账号</button></div>
               <div id="accountList"></div>
@@ -581,7 +632,7 @@
               <div class="about-body">
                 <svg class="about-logo" viewBox="0 0 24 24" fill="none"><path fill-rule="evenodd" d="M12 2 L13.3 10.7 L22 12 L13.3 13.3 L12 22 L10.7 13.3 L2 12 L10.7 10.7 Z M12 9 L14.6 12 L12 15 L9.4 12 Z" fill="currentColor"/></svg>
                 <div>
-                  <b>XuanLuo Gacha Export Hub <span class="about-version">v1.6.1</span></b>
+                  <b>XuanLuo Gacha Export Hub <span class="about-version">v1.6.2</span></b>
                   <p>原神祈愿 · 崩铁跃迁 · 绝区零调频 · 鸣潮唤取的抽卡记录管理与导出工具。</p>
                   <button class="gh-link" data-act="openGithub">github.com/XLoDream/XuanLuo-Gacha-Export-Hub<span>↗</span></button>
                   <p class="hint" id="aboutVersions">运行环境检测中…</p>
