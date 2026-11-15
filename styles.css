@@ -1232,6 +1232,12 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round
 .link-card h3 { font-size: 16px; font-weight: 600; letter-spacing: 0.2px; }
 .link-card p { margin-top: 7px; font-size: 12.5px; line-height: 1.65; color: var(--muted); }
 .link-card .link-import-current { color: var(--text); font-size: 14px; font-weight: 600; }
+.link-import-steps { display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; margin-top: 17px; }
+.link-import-step { display: flex; flex-direction: column; align-items: center; gap: 5px; color: var(--muted); font-size: 10.5px; white-space: nowrap; }
+.link-import-step > i { display: grid; place-items: center; width: 22px; height: 22px; border: 1px solid var(--line); border-radius: 50%; font-size: 11px; font-style: normal; transition: all 0.18s; }
+.link-import-step.active { color: var(--accent); font-weight: 600; }
+.link-import-step.active > i { color: #fff; background: var(--accent); border-color: var(--accent); }
+.link-import-step.done > i { color: var(--accent); border-color: var(--accent); }
 .link-input {
   display: block; width: 100%; margin-top: 16px; padding: 10px 12px;
   background: var(--card-2); border: 1px solid var(--line); border-radius: 10px;

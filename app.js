@@ -1793,7 +1793,7 @@ const FETCH_API = {
   zzz: { call: (k, link) => api.fetchZzz(k, link), on: (cb) => api.onZzzProgress(cb) },
   wuwa: { call: (k, link) => api.fetchWuwa(link), on: (cb) => api.onWuwaProgress(cb) }, // 全量拉取，无需增量参数
 };
-async function fetchOnline(game, link, onProgress, shouldCancel) {
+async function fetchOnline(game, link, onProgress, shouldCancel, onStage) {
   if (fetching[game]) return { ok: false, error: '该游戏正在更新' };
   const fetchApi = FETCH_API[game];
   if (!fetchApi) {
@@ -1817,11 +1817,14 @@ async function fetchOnline(game, link, onProgress, shouldCancel) {
     if (shouldCancel?.()) return { ok: false, error: '连接超时，已跳过', connectTimeout: true };
     if (!res) return { ok: false, error: '未返回获取结果' };
     if (res.error) { toast(res.error); return { ok: false, error: res.error }; }
+    await onStage?.('merge');
+    if (shouldCancel?.()) return { ok: false, error: '连接超时，已跳过', connectTimeout: true };
     const added = applyUids(game, res.uids);
     await save();
     renderGame(game);
     renderOverview();
     if (game === 'hsr') renderHsrTeam();
+    await onStage?.('done');
     toast(added ? `更新完成：新增 ${added} 条记录` : '数据已是最新');
     return { ok: true, added };
   } finally {
@@ -1932,6 +1935,28 @@ function closeLinkImportNotice() {
 }
 
 const LINK_CONNECT_TIMEOUT = 3000;
+const LINK_STEP_COOLDOWN = 400;
+function createLinkImportStepper() {
+  let chain = Promise.resolve(), cancelled = false;
+  return {
+    cancel() { cancelled = true; },
+    advance(step, detail) {
+      chain = chain.then(async () => {
+        if (cancelled) return;
+        for (let i = 0; i < 5; i++) {
+          const el = $(`#linkImportStep${i}`);
+          el.className = 'link-import-step' + (i === step ? ' active' : i < step ? ' done' : '');
+          const icon = el.querySelector('i');
+          if (icon) icon.textContent = i < step ? '✓' : String(i + 1);
+        }
+        if (detail) $('#linkImportDetail').textContent = detail;
+        await new Promise((resolve) => setTimeout(resolve, LINK_STEP_COOLDOWN));
+      });
+      return chain;
+    },
+  };
+}
+
 let linkImporting = false;
 async function importLinks() {
   if (linkImporting) return;
@@ -1960,32 +1985,63 @@ async function importLinks() {
       const game = games[i];
       const name = GAMES[game].name;
       $('#linkImportGame').textContent = `正在更新：${name}（${i + 1}/${games.length}）`;
-      $('#linkImportDetail').textContent = '正在连接抽卡记录服务…';
+      const stepper = createLinkImportStepper();
+      await stepper.advance(0, `正在准备${name}的抽卡链接…`);
+      await stepper.advance(1, '正在连接抽卡记录服务…（1/3）');
       let result;
       try {
-        let timedOut = false, timer;
-        const fetchPromise = fetchOnline(game, res.links[game], (p) => {
+        let timedOut = false, timer, countdownTimer, countdown = 1, recordStepStarted = false;
+        const clearConnectionTimers = () => {
           clearTimeout(timer);
+          clearInterval(countdownTimer);
+        };
+        countdownTimer = setInterval(() => {
+          if (timedOut || countdown >= 3) return;
+          countdown++;
+          $('#linkImportDetail').textContent = `正在连接抽卡记录服务…（${countdown}/3）`;
+        }, 1000);
+        const fetchPromise = fetchOnline(game, res.links[game], (p) => {
+          clearConnectionTimers();
           if (!timedOut) {
-            $('#linkImportDetail').textContent = `正在获取「${p.label}」第 ${p.page} 页（新增 ${p.total} 条）`;
+            const detail = `正在获取「${p.label}」第 ${p.page} 页（新增 ${p.total} 条）`;
+            if (!recordStepStarted) {
+              recordStepStarted = true;
+              void stepper.advance(2, detail);
+            } else {
+              $('#linkImportDetail').textContent = detail;
+            }
           }
-        }, () => timedOut);
+        }, () => timedOut, async (stage) => {
+          if (stage === 'merge') {
+            clearConnectionTimers();
+            if (!recordStepStarted) {
+              recordStepStarted = true;
+              await stepper.advance(2, '已连接，正在整理获取结果…');
+            }
+            await stepper.advance(3, '正在合并并保存抽卡记录…');
+          } else if (stage === 'done') {
+            await stepper.advance(4, `${name}更新完成`);
+          }
+        });
         const timeoutPromise = new Promise((resolve) => {
           timer = setTimeout(() => {
             timedOut = true;
+            stepper.cancel();
             resolve({ ok: false, error: '连接抽卡记录服务超过 3 秒', connectTimeout: true });
           }, LINK_CONNECT_TIMEOUT);
         });
         try {
           result = await Promise.race([fetchPromise, timeoutPromise]);
         } finally {
-          clearTimeout(timer);
+          clearConnectionTimers();
         }
-        if (result.connectTimeout) {
+        if (!result?.ok) stepper.cancel();
+        if (result?.connectTimeout) {
           $('#linkImportDetail').textContent = '连接超过 3 秒，已跳过';
           toast(`${name}：连接抽卡记录服务超过 3 秒，已跳过`);
         }
       } catch (e) {
+        stepper.cancel();
         result = { ok: false, error: e.message || '获取失败' };
         toast(`${name}：${result.error}`);
       }
