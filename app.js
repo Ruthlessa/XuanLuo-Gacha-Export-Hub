@@ -81,12 +81,43 @@ $('#autoUpdateOnSwitchToggle').addEventListener('change', (e) => {
   toast(e.target.checked ? '已开启切换视图自动更新' : '已关闭切换视图自动更新');
 });
 
-function toast(msg) {
+const TOAST_MIN_MS = 500; // 每条提示至少停留 0.5 秒再消失
+const TOAST_OUT_MS = 360; // 淡出+收起动画总时长，需与 styles.css 过渡匹配
+
+function toast(msg, duration = 3000) {
   const el = document.createElement('div');
   el.className = 'toast';
   el.textContent = msg;
   $('#toasts').appendChild(el);
-  setTimeout(() => el.remove(), 3000);
+  const shownAt = Date.now();
+  const dismiss = () => {
+    if (el._removed) return;
+    const elapsed = Date.now() - shownAt;
+    const wait = Math.max(0, TOAST_MIN_MS - elapsed);
+    setTimeout(() => {
+      if (el._removed) return;
+      // 先把当前高度写死，再触发 max-height:0 的收起过渡，避免 auto→0 无动画
+      el.style.maxHeight = el.offsetHeight + 'px';
+      // 强制回流，让 max-height 写入生效后再加 out 类
+      void el.offsetHeight;
+      el.classList.add('toast-out');
+      el._removed = true;
+      setTimeout(() => el.remove(), TOAST_OUT_MS);
+    }, wait);
+  };
+  el.dismiss = dismiss;
+  if (duration > 0) setTimeout(dismiss, duration);
+  return el;
+}
+
+// 常驻提示（不自动消失），返回 { el, update(msg), dismiss() }，用于目录查找等长流程
+function toastKeep(msg) {
+  const el = toast(msg, 0);
+  return {
+    el,
+    update(text) { el.textContent = text; },
+    dismiss() { el.dismiss(); },
+  };
 }
 
 // ---------- 更新弹窗 ----------
@@ -1898,9 +1929,24 @@ async function fetchOnline(game, link, onProgress, onStage, priority = 'auto') {
       clearTimeout(timeoutId);
       timeoutId = null;
       if (hint) hint.textContent = '正在查找游戏目录…';
+      if (!req.searchToast) req.searchToast = toastKeep('检测到该目录不存在，正在查找…');
       return;
     }
-    if (p?.searching === false) { armTimeout(); return; }
+    if (p?.searching === false) {
+      armTimeout();
+      // 找到目录：更新提示为「已定位：路径」并在 3 秒后消失；未找到则直接收起，交由后续错误提示说明
+      if (req.searchToast) {
+        const handle = req.searchToast;
+        if (p.located) {
+          handle.update(`已定位：${p.located}`);
+          setTimeout(() => handle.dismiss(), 3000);
+        } else {
+          handle.dismiss();
+        }
+        req.searchToast = null;
+      }
+      return;
+    }
     clearTimeout(timeoutId);
     timeoutId = null;
     if (hint) hint.textContent = `正在获取「${p.label}」第 ${p.page} 页（新增 ${p.total} 条）`;
@@ -1940,6 +1986,8 @@ async function fetchOnline(game, link, onProgress, onStage, priority = 'auto') {
   } finally {
     clearTimeout(timeoutId);
     req.off();
+    // 目录查找提示未在 searching:false 中收尾时（被打断/超时/异常），统一收起
+    if (req.searchToast) { req.searchToast.dismiss(); req.searchToast = null; }
     // 被打断或已超时的请求不再改动界面与状态，交由接管的新请求负责
     if (!req.superseded && !timedOut) {
       if (btn) btn.disabled = false;

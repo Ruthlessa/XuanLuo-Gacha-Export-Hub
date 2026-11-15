@@ -936,18 +936,18 @@ async function readWuwaUrl(allowScan = true, notify) {
   // 未配置、路径不存在、或路径存在但不是游戏目录时才查找；真实游戏目录只是暂无日志则不查找
   const customValid = Boolean(custom) && fs.existsSync(custom) && isWuwaInstallDir(custom);
   const needSearch = !customValid;
-  // 自动更新只使用已保存目录，不触发查找；手动更新才查注册表、常见目录与全盘扫描
+  // 配置目录失效或未找到（且无可读日志）：依次查注册表、常见目录、全盘扫描，命中后写回 app.config.json
   if (!dirs.length && allowScan && needSearch) {
-    push(await readWuwaRegistry());
-    wuwaInstallCandidates().forEach(push);
-  }
-  // 配置目录失效或未找到：异步自行查找，命中后写回 app.config.json
-  if (!dirs.length && allowScan && needSearch) {
-    notify?.({ searching: true }); // 查找阶段较长，通知界面暂停 3 秒超时计时
+    notify?.({ searching: true }); // 查找阶段较长，通知界面暂停 3 秒超时计时并提示用户
     try {
-      push(await scanWuwaGameDir(true));
+      // 1) 注册表（快速）
+      push(await readWuwaRegistry());
+      // 2) 常见安装目录
+      wuwaInstallCandidates().forEach(push);
+      // 3) 全盘扫描（慢速，仅当前面都没命中时）
+      if (!dirs.length) push(await scanWuwaGameDir(true));
     } finally {
-      notify?.({ searching: false });
+      notify?.({ searching: false, located: dirs[0] || null });
     }
   }
   if (dirs.length && dirs[0] !== custom && !(custom && wuwaLogCandidates(custom).length)) {
