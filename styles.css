@@ -344,6 +344,21 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round
 .five-item-time { font-size: 11.5px; color: var(--muted); }
 .five-empty { padding: 16px 4px 8px; }
 
+/* 绝区零：无头像，横向紧凑按钮 */
+#view-zzz .five-grid {
+  display: flex; flex-wrap: wrap; align-items: center;
+  gap: 8px;
+}
+#view-zzz .zzz-five-item {
+  flex: 0 0 auto; width: auto;
+  display: inline-flex; flex-direction: row; align-items: center; gap: 8px;
+  padding: 7px 11px; border-radius: 8px;
+  color: var(--text); font: inherit; text-align: left;
+}
+#view-zzz .zzz-five-item .five-item-name { font-size: 13px; white-space: nowrap; }
+#view-zzz .zzz-five-meta { font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+#view-zzz button.zzz-five-item { cursor: pointer; }
+
 /* ---------- 崩铁·配队 ---------- */
 .team-filters {
   display: flex; flex-wrap: wrap; align-items: center;

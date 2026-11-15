@@ -426,11 +426,11 @@ let viewMode = {};
 let recFilter = {};
 let subRefs = {};
 // 五星总览：每个游戏当前选中的卡池 key
-let fiveOverviewPool = { genshin: 'char', hsr: 'char', wuwa: 'char' };
+let fiveOverviewPool = { genshin: 'char', hsr: 'char', zzz: 'limited', wuwa: 'char' };
 // 五星总览分页：每页 2 行 × 7 列 = 14 个
 const FIVE_PAGE_SIZE = 14;
-let fiveOverviewPage = { genshin: 1, hsr: 1, wuwa: 1 };
-const FIVE_OVERVIEW_GAMES = ['genshin', 'hsr', 'wuwa'];
+let fiveOverviewPage = { genshin: 1, hsr: 1, zzz: 1, wuwa: 1 };
+const FIVE_OVERVIEW_GAMES = ['genshin', 'hsr', 'zzz', 'wuwa'];
 // 崩铁·配队：当前选中的物品类型
 let teamTab = '角色';
 // 崩铁·配队：筛选条件（命途 / 属性 / 星级，空字符串表示全部）
@@ -521,7 +521,7 @@ GAME_ORDER.forEach((game) => {
   group.appendChild(ovBtn);
   subRefs[game].push({ key: 'overview', btn: ovBtn });
 
-  // 五星总览（原神 / 崩铁 / 鸣潮，固定在概览下方）
+  // 五星总览（原神 / 崩铁 / 绝区零 / 鸣潮，固定在概览下方）
   if (FIVE_OVERVIEW_GAMES.includes(game)) {
     const fiveBtn = document.createElement('button');
     fiveBtn.className = 'sub-item';
@@ -859,7 +859,7 @@ function renderGame(game) {
   else renderRecords(game);                       // 具体卡池：记录表
 }
 
-// ---------- 五星总览（原神 / 崩铁 / 鸣潮） ----------
+// ---------- 五星总览（原神 / 崩铁 / 绝区零 / 鸣潮） ----------
 // 物品图标路径：按游戏与类型选择资源目录与扩展名
 function itemIcon(game, name, type) {
   let id, sub, ext;
@@ -951,6 +951,15 @@ function renderFiveOverview(game, acc) {
     const p = pity.get(r.id) ?? '?';
     const icon = itemIcon(game, r.name, r.type);
     const iconHtml = icon ? `<img class="five-item-icon" src="${icon}" alt="" onerror="this.style.display='none'">` : '';
+    // 绝区零不加载头像，代理人使用可点击的横向小按钮
+    if (game === 'zzz') {
+      const isAgent = r.type === '代理人';
+      const tag = isAgent ? 'button' : 'div';
+      return `<${tag}${isAgent ? ' type="button"' : ''} class="five-item zzz-five-item${isAgent ? ' guide-char' : ''}"${isAgent ? ` data-name="${r.name.replace(/"/g, '&quot;')}"` : ''} title="${r.time} · ${r.type}${isAgent ? ' · 点击查询米游社攻略' : ''}">
+        <span class="five-item-name" style="color:${nameColor(r.name)}">${r.name}</span>
+        <span class="zzz-five-meta">${r.type} · ${p} 抽出</span>
+      </${tag}>`;
+    }
     // 崩铁角色卡片可点击打开配队推荐；原神角色卡片可点击打开米游社攻略
     let clickable = '';
     if (game === 'hsr' && r.type === '角色') clickable = ' team-char';
@@ -979,11 +988,13 @@ function renderFiveOverview(game, acc) {
       });
     });
   }
-  // 原神 / 鸣潮角色卡片点击 → 外置浏览器打开攻略搜索
-  if (game === 'genshin' || game === 'wuwa') {
+  // 原神 / 绝区零 / 鸣潮角色卡片点击 → 外置浏览器打开攻略搜索
+  if (game === 'genshin' || game === 'zzz' || game === 'wuwa') {
     const base = game === 'genshin'
       ? `https://www.miyoushe.com/ys/search?keyword=`
-      : `https://www.kurobbs.com/mc/search?q=`;
+      : game === 'zzz'
+        ? `https://www.miyoushe.com/zzz/search?keyword=`
+        : `https://www.kurobbs.com/mc/search?q=`;
     grid.querySelectorAll('.guide-char').forEach((el) => {
       el.addEventListener('click', () => {
         const name = el.dataset.name;
