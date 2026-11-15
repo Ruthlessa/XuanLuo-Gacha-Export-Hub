@@ -56,7 +56,7 @@ contextBridge.exposeInMainWorld('api', {
   fetchZzz: (knownLatest, link) => ipcRenderer.invoke('zzz:fetch', knownLatest, link),
   copyZzzUrl: () => ipcRenderer.invoke('zzz:copyUrl'),
   openZzzCacheDir: () => ipcRenderer.invoke('zzz:openCacheDir'),
-  fetchWuwa: (link, allowScan = true) => ipcRenderer.invoke('wuwa:fetch', link, allowScan),
+  fetchWuwa: (knownKeys, link, allowScan = true) => ipcRenderer.invoke('wuwa:fetch', knownKeys, link, allowScan),
   importWuwaExcel: () => ipcRenderer.invoke('wuwa:importExcel'),
   copyWuwaUrl: () => ipcRenderer.invoke('wuwa:copyUrl'),
   openWuwaCacheDir: () => ipcRenderer.invoke('wuwa:openCacheDir'),

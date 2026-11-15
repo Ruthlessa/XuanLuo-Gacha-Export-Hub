@@ -1001,7 +1001,18 @@ async function fetchJsonPost(url, body, signal) {
 // 卡池类型（上游 POOL_NAMES）：1/2 活动 3/4 常驻 5-7 新手系 8/9 新旅 10/11 联动 12/13 忆旅
 const WUWA_TYPES = GAMES.wuwa.fetchTypes;
 
-ipcMain.handle('wuwa:fetch', async (ev, link, allowScan) => {
+// 鸣潮接口 time 为 Unix 时间戳（秒），统一转为本地时间字符串，与已有记录的 time 格式对齐，保证指纹匹配
+function wuwaTimeToStr(t) {
+  if (typeof t === 'number') {
+    const ms = t > 1e12 ? t : t * 1000; // 兼容秒和毫秒
+    const d = new Date(ms);
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  }
+  return String(t || '');
+}
+
+ipcMain.handle('wuwa:fetch', async (ev, knownKeys, link, allowScan) => {
   const ctrl = beginOnlineFetch('wuwa');
   const send = (p) => { if (!ev.sender.isDestroyed()) ev.sender.send('wuwa:progress', p); };
   try {
@@ -1022,31 +1033,58 @@ ipcMain.handle('wuwa:fetch', async (ev, link, allowScan) => {
       : 'https://gmserver-api.aki-game2.net/gacha/record/query';
     const languageCode = params.get('lang') || 'zh-Hans';
 
-    const list = [];
+    // 增量过滤：用「时间|名称|池|类型|星级」指纹匹配已有记录，相同指纹按次数消耗，只保留真正新增；
+    // remain 在所有池之间共享，逐池消费，保证 total 始终是累计新增数（与原神等游戏一致）
+    const known = (knownKeys && knownKeys[playerId]) || {};
+    const remain = {};
+    Object.keys(known).forEach((k) => { remain[k] = known[k]; });
+
+    const list = [];   // 全量（用于最后排序生成合成 id）
+    const fresh = [];  // 增量过滤后的新增记录
     let anySuccess = false;
     let lastErr = '';
     for (const [type, label] of WUWA_TYPES) {
       if (ctrl.signal.aborted) return { error: '已被新的更新请求替代' };
-      send({ label, page: 1, total: list.length });
       try {
         const json = await fetchJsonPost(endpoint, {
           playerId, recordId, cardPoolId, cardPoolType: type, serverId, languageCode,
         }, ctrl.signal);
         if (json.code !== 0) throw new Error(json.message || '请求失败');
-        // 响应记录里的 cardPoolType 可能是中文名（如"角色精准调谐"），以请求的类型码为准
-        (json.data || []).forEach((it) => list.push({ ...it, cardPoolType: type }));
+        // 响应记录里的 cardPoolType 可能是中文名（如"角色精准调谐"），以请求的类型码为准；
+        // time 转为本地时间字符串，与已有记录格式对齐
+        const poolList = (json.data || []).map((it) => ({ ...it, time: wuwaTimeToStr(it.time), cardPoolType: type }));
+        list.push(...poolList);
+        // 逐池过滤，只保留新增；fresh 与 list 中的对象为同一引用，后续生成 id 时自动同步
+        for (const it of poolList) {
+          const fp = `${it.time}|${it.name}|${it.cardPoolType}|${it.resourceType || ''}|${Number(it.qualityLevel) || 3}`;
+          if (remain[fp] > 0) { remain[fp] -= 1; continue; }
+          fresh.push(it);
+        }
         anySuccess = true;
       } catch (e) {
         if (ctrl.signal.aborted) return { error: '已被新的更新请求替代' };
         lastErr = e.message;
       } // 空池或已下架池会失败，跳过
+      // 每池结束后上报累计新增数（与原神翻页后上报 total 语义一致）
+      send({ label, page: 1, total: fresh.length });
       await sleep(200);
     }
     if (!anySuccess) return { error: `未能获取到数据，链接可能已过期（约 24 小时有效），请重新获取${lastErr ? `（${lastErr}）` : ''}` };
     if (!list.length) return { error: '链接有效但没有唤取记录' };
 
-    // 接口记录无官方 id：按时间升序，对同（时间|名称|池）组编序号生成合成 id
-    list.sort((a, b) => String(a.time).localeCompare(String(b.time)));
+    // 接口记录无官方 id：按 时间→名称→池→类型→星级 升序（多级排序保证同秒记录顺序稳定），
+    // 再对同（时间|名称|池）组编序号生成合成 id。seq 基于全量列表位置，保证新增记录的 id 与已有记录不冲突。
+    list.sort((a, b) => {
+      const t = String(a.time).localeCompare(String(b.time));
+      if (t !== 0) return t;
+      const n = String(a.name).localeCompare(String(b.name));
+      if (n !== 0) return n;
+      const p = String(a.cardPoolType).localeCompare(String(b.cardPoolType));
+      if (p !== 0) return p;
+      const r = String(a.resourceType || '').localeCompare(String(b.resourceType || ''));
+      if (r !== 0) return r;
+      return Number(a.qualityLevel) - Number(b.qualityLevel);
+    });
     const seen = new Map();
     list.forEach((it) => {
       const key = `${it.time}|${it.name}|${it.cardPoolType}`;
@@ -1054,8 +1092,9 @@ ipcMain.handle('wuwa:fetch', async (ev, link, allowScan) => {
       seen.set(key, seq + 1);
       it.id = `${key}|${seq}`;
     });
-    send({ label: '完成', page: 1, total: list.length });
-    return { ok: true, uids: [{ uid: playerId, list }] };
+
+    send({ label: '完成', page: 1, total: fresh.length });
+    return { ok: true, uids: fresh.length ? [{ uid: playerId, list: fresh }] : [] };
   } catch (e) {
     return { error: '读取失败：' + e.message };
   }
@@ -1115,8 +1154,18 @@ ipcMain.handle('wuwa:importExcel', async () => {
     });
     if (!list.length) return { error: 'Excel 中没有可识别的唤取记录' };
     if (!uid) return { error: '无法识别 UID（文件名或工作表名应为数字 UID）' };
-    // 合成 id 与在线拉取同规则：按时间升序，对同（时间|名称|池）组编序号
-    list.sort((a, b) => String(a.time).localeCompare(String(b.time)));
+    // 合成 id 与在线拉取同规则：按 时间→名称→池→类型→星级 升序，对同（时间|名称|池）组编序号
+    list.sort((a, b) => {
+      const t = String(a.time).localeCompare(String(b.time));
+      if (t !== 0) return t;
+      const n = String(a.name).localeCompare(String(b.name));
+      if (n !== 0) return n;
+      const p = String(a.cardPoolType).localeCompare(String(b.cardPoolType));
+      if (p !== 0) return p;
+      const r = String(a.resourceType || '').localeCompare(String(b.resourceType || ''));
+      if (r !== 0) return r;
+      return Number(a.qualityLevel) - Number(b.qualityLevel);
+    });
     const seen = new Map();
     list.forEach((it) => {
       const key = `${it.time}|${it.name}|${it.cardPoolType}`;

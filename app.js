@@ -1791,13 +1791,31 @@ function applyUids(game, uids) {
     uid = uid || '未知UID';
     if (!firstUid) firstUid = uid;
     let acc = accountsOf(game).find((a) => a.uid === uid);
-    const ids = new Set((acc?.records || []).map((r) => r.id));
     const fresh = [];
-    for (const item of list) {
-      const r = normalize(game, item);
-      if (!r || !r.id || ids.has(r.id)) continue;
-      ids.add(r.id); // 同时去掉导入批次内的重复
-      fresh.push(r);
+    if (game === 'wuwa') {
+      // 鸣潮无官方 id：按内容指纹（时间|名称|池|类型|星级）去重，相同指纹按已有次数消耗，
+      // 避免合成 id 冲突导致误判，同时防止重复导入同一 Excel
+      const existing = acc?.records || [];
+      const counts = {};
+      existing.forEach((r) => {
+        const k = `${r.time}|${r.name}|${r.gt}|${r.type}|${r.rank}`;
+        counts[k] = (counts[k] || 0) + 1;
+      });
+      for (const item of list) {
+        const r = normalize(game, item);
+        if (!r) continue;
+        const k = `${r.time}|${r.name}|${r.gt}|${r.type}|${r.rank}`;
+        if (counts[k] > 0) { counts[k] -= 1; continue; }
+        fresh.push(r);
+      }
+    } else {
+      const ids = new Set((acc?.records || []).map((r) => r.id));
+      for (const item of list) {
+        const r = normalize(game, item);
+        if (!r || !r.id || ids.has(r.id)) continue;
+        ids.add(r.id); // 同时去掉导入批次内的重复
+        fresh.push(r);
+      }
     }
     if (!fresh.length) return; // 无新增不刷新时间，也不创建空账号
     if (!acc) {
@@ -1806,6 +1824,8 @@ function applyUids(game, uids) {
     }
     acc.records.push(...fresh);
     acc.records.sort(cmpRec);
+    // 鸣潮：合并后重新生成合成 id，保证全账号内 id 唯一且与排序一致
+    if (game === 'wuwa') reassignWuwaIds(acc.records);
     acc.updatedAt = Date.now();
     added += fresh.length;
   });
@@ -1813,6 +1833,28 @@ function applyUids(game, uids) {
     store.active[game] = firstUid; // 多账号文件统一选中首个，而不是最后一个
   }
   return added;
+}
+
+// 鸣潮合成 id：按 时间→名称→池→类型→星级 升序后，对同（时间|名称|池）组编序号
+function reassignWuwaIds(records) {
+  records.sort((a, b) => {
+    const t = String(a.time).localeCompare(String(b.time));
+    if (t !== 0) return t;
+    const n = String(a.name).localeCompare(String(b.name));
+    if (n !== 0) return n;
+    const p = String(a.gt).localeCompare(String(b.gt));
+    if (p !== 0) return p;
+    const r = String(a.type || '').localeCompare(String(b.type || ''));
+    if (r !== 0) return r;
+    return Number(a.rank) - Number(b.rank);
+  });
+  const seen = new Map();
+  records.forEach((it) => {
+    const key = `${it.time}|${it.name}|${it.gt}`;
+    const seq = seen.get(key) || 0;
+    seen.set(key, seq + 1);
+    it.id = `${key}|${seq}`;
+  });
 }
 
 async function importData(game) {
@@ -1871,13 +1913,28 @@ function knownLatest(game) {
   return map;
 }
 
+// 鸣潮无官方记录 id：按「时间|名称|池|类型|星级」统计已有记录中每个指纹的出现次数，
+// 主进程据此跳过已知记录、只返回新增，避免合成 id 的 seq 错位导致老数据被算成新增
+function knownWuwaKeys() {
+  const map = {};
+  accountsOf('wuwa').forEach((acc) => {
+    const per = {};
+    acc.records.forEach((r) => {
+      const k = `${r.time}|${r.name}|${r.gt}|${r.type}|${r.rank}`;
+      per[k] = (per[k] || 0) + 1;
+    });
+    map[acc.uid] = per;
+  });
+  return map;
+}
+
 // 在线获取（读取游戏缓存链接，增量拉取；link 为空时自动读取缓存）
 const FETCH_API = {
   genshin: { call: (k, link) => api.fetchGenshin(k, link), on: (cb) => api.onFetchProgress(cb) },
   hsr: { call: (k, link) => api.fetchHsr(k, link), on: (cb) => api.onHsrProgress(cb) },
   zzz: { call: (k, link) => api.fetchZzz(k, link), on: (cb) => api.onZzzProgress(cb) },
-  // 全量拉取，无需增量参数；自动更新不触发目录查找，手动更新才查找
-  wuwa: { call: (k, link, priority) => api.fetchWuwa(link, priority !== 'auto'), on: (cb) => api.onWuwaProgress(cb) },
+  // 鸣潮无官方 id，传已有记录指纹做增量；其余游戏传 knownLatest 用官方 id 做增量
+  wuwa: { call: (k, link, priority) => api.fetchWuwa(knownWuwaKeys(), link, priority !== 'auto'), on: (cb) => api.onWuwaProgress(cb) },
 };
 // 更新优先级：链接 > 手动 > 自动；更高优先级会强制打断正在进行的低优先级更新
 const FETCH_PRIORITY = { auto: 1, manual: 2, link: 3 };
@@ -1949,7 +2006,10 @@ async function fetchOnline(game, link, onProgress, onStage, priority = 'auto') {
     }
     clearTimeout(timeoutId);
     timeoutId = null;
-    if (hint) hint.textContent = `正在获取「${p.label}」第 ${p.page} 页（新增 ${p.total} 条）`;
+    if (hint) {
+      // total 始终为累计新增数（鸣潮逐池指纹过滤后上报，与原神等游戏一致）
+      hint.textContent = `正在获取「${p.label}」第 ${p.page} 页（新增 ${p.total} 条）`;
+    }
     if (onProgress) onProgress(p);
   });
   try {
