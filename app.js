@@ -1793,12 +1793,12 @@ const FETCH_API = {
   zzz: { call: (k, link) => api.fetchZzz(k, link), on: (cb) => api.onZzzProgress(cb) },
   wuwa: { call: (k, link) => api.fetchWuwa(link), on: (cb) => api.onWuwaProgress(cb) }, // 全量拉取，无需增量参数
 };
-async function fetchOnline(game, link) {
-  if (fetching[game]) return;
+async function fetchOnline(game, link, onProgress, shouldCancel) {
+  if (fetching[game]) return { ok: false, error: '该游戏正在更新' };
   const fetchApi = FETCH_API[game];
   if (!fetchApi) {
     toast(`「${GAMES[game].name}」在线获取待接入`);
-    return;
+    return { ok: false, error: '在线获取待接入' };
   }
   fetching[game] = true;
   lastUpdateTime[game] = Date.now();
@@ -1810,17 +1810,20 @@ async function fetchOnline(game, link) {
   if (hint) hint.textContent = link ? '正在通过链接读取…' : '正在读取游戏缓存…';
   const off = fetchApi.on((p) => {
     if (hint) hint.textContent = `正在获取「${p.label}」第 ${p.page} 页（新增 ${p.total} 条）`;
+    if (onProgress) onProgress(p);
   });
   try {
     const res = await fetchApi.call(knownLatest(game), link);
-    if (!res) return;
-    if (res.error) { toast(res.error); return; }
+    if (shouldCancel?.()) return { ok: false, error: '连接超时，已跳过', connectTimeout: true };
+    if (!res) return { ok: false, error: '未返回获取结果' };
+    if (res.error) { toast(res.error); return { ok: false, error: res.error }; }
     const added = applyUids(game, res.uids);
     await save();
     renderGame(game);
     renderOverview();
     if (game === 'hsr') renderHsrTeam();
     toast(added ? `更新完成：新增 ${added} 条记录` : '数据已是最新');
+    return { ok: true, added };
   } finally {
     off();
     if (btn) btn.disabled = false;
@@ -1921,6 +1924,86 @@ async function importAll() {
   toast(`导入完成：共 ${res.totalAcc} 个账号，新增 ${addedAcc} 个账号、${addedRec} 条记录${sel ? '；' + sel : ''}`);
 }
 
+function openLinkImportNotice() {
+  $('#linkImportNoticeMask').hidden = false;
+}
+function closeLinkImportNotice() {
+  $('#linkImportNoticeMask').hidden = true;
+}
+
+const LINK_CONNECT_TIMEOUT = 3000;
+let linkImporting = false;
+async function importLinks() {
+  if (linkImporting) return;
+  linkImporting = true;
+  const btn = $('[data-act="importLinks"]');
+  if (btn) btn.disabled = true;
+  try {
+    const res = await api.batchLinkImport();
+    if (!res) return;
+    if (res.error) { toast(res.error); return; }
+
+    const games = GAME_ORDER.filter((game) => res.links[game]);
+    if (!games.length) { toast('文件中没有可导入的游戏链接'); return; }
+    const mask = $('#linkImportMask');
+    mask.hidden = false;
+    const updateProgress = (done) => {
+      const pct = Math.round(done / games.length * 100);
+      $('#linkImportProgressFill').style.width = `${pct}%`;
+      $('#linkImportProgressText').textContent = `${pct}%`;
+      $('#linkImportProgress').setAttribute('aria-valuenow', String(pct));
+    };
+    updateProgress(0);
+
+    const succeeded = [], failed = [];
+    for (let i = 0; i < games.length; i++) {
+      const game = games[i];
+      const name = GAMES[game].name;
+      $('#linkImportGame').textContent = `正在更新：${name}（${i + 1}/${games.length}）`;
+      $('#linkImportDetail').textContent = '正在连接抽卡记录服务…';
+      let result;
+      try {
+        let timedOut = false, timer;
+        const fetchPromise = fetchOnline(game, res.links[game], (p) => {
+          clearTimeout(timer);
+          if (!timedOut) {
+            $('#linkImportDetail').textContent = `正在获取「${p.label}」第 ${p.page} 页（新增 ${p.total} 条）`;
+          }
+        }, () => timedOut);
+        const timeoutPromise = new Promise((resolve) => {
+          timer = setTimeout(() => {
+            timedOut = true;
+            resolve({ ok: false, error: '连接抽卡记录服务超过 3 秒', connectTimeout: true });
+          }, LINK_CONNECT_TIMEOUT);
+        });
+        try {
+          result = await Promise.race([fetchPromise, timeoutPromise]);
+        } finally {
+          clearTimeout(timer);
+        }
+        if (result.connectTimeout) {
+          $('#linkImportDetail').textContent = '连接超过 3 秒，已跳过';
+          toast(`${name}：连接抽卡记录服务超过 3 秒，已跳过`);
+        }
+      } catch (e) {
+        result = { ok: false, error: e.message || '获取失败' };
+        toast(`${name}：${result.error}`);
+      }
+      (result?.ok ? succeeded : failed).push(name);
+      updateProgress(i + 1);
+    }
+    const failure = failed.length ? `（${failed.join('、')}）` : '';
+    toast(`批量链接导入完成：成功 ${succeeded.length} 个、失败 ${failed.length} 个${failure}`);
+  } catch (e) {
+    toast(`批量链接导入失败：${e.message}`);
+  } finally {
+    linkImporting = false;
+    if (btn) btn.disabled = false;
+    const mask = $('#linkImportMask');
+    if (mask) mask.hidden = true;
+  }
+}
+
 // 复制抽卡链接 / 打开缓存目录（原神 / 崩铁 / 绝区零 / 鸣潮）
 const GAME_URL_API = {
   genshin: { copy: () => api.copyGenshinUrl(), dir: () => api.openGenshinCacheDir() },
@@ -2004,6 +2087,12 @@ document.addEventListener('click', (e) => {
   if (act === 'exportExcel' && game) return exportExcel(game);
   if (act === 'exportAll') return exportAll();
   if (act === 'importAll') return importAll();
+  if (act === 'importLinks') return openLinkImportNotice();
+  if (act === 'closeLinkImportNotice') return closeLinkImportNotice();
+  if (act === 'confirmLinkImport') {
+    closeLinkImportNotice();
+    return importLinks();
+  }
   if (act === 'copyUrl' && GAME_URL_API[game]) return copyGameUrl(game);
   if (act === 'cacheDir' && GAME_URL_API[game]) return openGameCacheDir(game);
   if (act === 'openDir') return api.openDataDir();
@@ -2018,8 +2107,8 @@ document.addEventListener('click', (e) => {
   if (act === 'openGithub') return api.openExternal('https://github.com/XLoDream/XuanLuo-Gacha-Export-Hub');
 
   const ACT_TEXT = {
-    update: '更新数据', export: '导出 UIGF', importAll: '批量导入',
-    exportAll: '导出全部', pickDir: '更改数据目录',
+    update: '更新数据', export: '导出 UIGF', importAll: '备份导入',
+    exportAll: '备份导出', pickDir: '更改数据目录',
   };
   toast(`「${ACT_TEXT[act] || '该功能'}」待接入`);
 });

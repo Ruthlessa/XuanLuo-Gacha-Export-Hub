@@ -1268,6 +1268,46 @@ ipcMain.handle('data:batchImport', async () => {
   return { ok: true, file, accounts, totalAcc, totalRec };
 });
 
+// MiniGetGachaLink 生成的 gacha-links.json 批量链接导入
+ipcMain.handle('data:batchLinkImport', async () => {
+  const res = await dialog.showOpenDialog({
+    title: '选择 MiniGetGachaLink 链接文件',
+    filters: [{ name: '抽卡链接 JSON', extensions: ['json'] }],
+    properties: ['openFile'],
+  });
+  if (res.canceled || !res.filePaths.length) return null;
+
+  const file = res.filePaths[0];
+  let json;
+  try {
+    const text = fs.readFileSync(file, 'utf8');
+    json = JSON.parse(text.charCodeAt(0) === 0xfeff ? text.slice(1) : text);
+  } catch {
+    return { error: '文件不是有效的 JSON' };
+  }
+  if (!json || typeof json !== 'object' || Array.isArray(json)) {
+    return { error: '文件格式不匹配，请选择 MiniGetGachaLink 生成的 gacha-links.json' };
+  }
+
+  const links = {};
+  for (const game of ['genshin', 'hsr', 'zzz', 'wuwa']) {
+    const value = json[game];
+    if (typeof value !== 'string' || !value.trim()) continue;
+    const link = value.trim();
+    try {
+      const parsed = new URL(link);
+      if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') throw new Error();
+    } catch {
+      return { error: `${game} 的链接格式无效` };
+    }
+    links[game] = link;
+  }
+  if (!Object.keys(links).length) {
+    return { error: '文件中没有可导入的游戏链接，请选择 MiniGetGachaLink 生成的 gacha-links.json' };
+  }
+  return { ok: true, file, links };
+});
+
 // ---------- 自动更新（GitHub Releases + 镜像前缀代理） ----------
 const GH_RELEASE_BASE = 'https://github.com/XLoDream/XuanLuo-Gacha-Export-Hub/releases/latest/download';
 // 镜像只做前缀代理：https://镜像/https://github.com/...

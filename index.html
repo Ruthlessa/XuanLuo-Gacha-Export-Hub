@@ -126,8 +126,9 @@
                   <svg class="hero-logo" viewBox="0 0 24 24" fill="none"><path fill-rule="evenodd" d="M12 2 L13.3 10.7 L22 12 L13.3 13.3 L12 22 L10.7 13.3 L2 12 L10.7 10.7 Z M12 9 L14.6 12 L12 15 L9.4 12 Z" fill="currentColor"/></svg>
                 </div>
                 <div class="hero-actions">
-                  <button class="btn-sm" data-act="importAll">批量导入</button>
-                  <button class="btn-sm primary" data-act="exportAll">导出全部</button>
+                  <button class="btn-sm" data-act="importAll">备份导入</button>
+                  <button class="btn-sm" data-act="importLinks">批量链接导入</button>
+                  <button class="btn-sm primary" data-act="exportAll">备份导出</button>
                 </div>
               </div>
             </div>
@@ -669,6 +670,33 @@
           <button class="btn-sm" data-act="closeLink">取消</button>
           <button class="btn-sm primary" data-act="submitLink">更新</button>
         </div>
+      </div>
+    </div>
+
+    <!-- 批量链接导入来源提示 -->
+    <div class="update-mask" id="linkImportNoticeMask" hidden>
+      <div class="update-card" role="dialog" aria-modal="true" aria-labelledby="linkImportNoticeTitle" aria-describedby="linkImportNoticeDesc">
+        <span class="update-glow" aria-hidden="true"></span>
+        <div class="update-icon" data-state="available" aria-hidden="true"></div>
+        <h3 id="linkImportNoticeTitle">批量链接导入</h3>
+        <p id="linkImportNoticeDesc">仅适用于导入由本项目 GitHub 发布的 <strong>MiniGetGachaLink.exe</strong> 获取的 JSON 文件。</p>
+        <div class="update-actions">
+          <button class="btn-sm" data-act="closeLinkImportNotice">取消</button>
+          <button class="btn-sm primary" data-act="confirmLinkImport">选择 JSON 文件</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 批量链接导入进度弹窗 -->
+    <div class="update-mask" id="linkImportMask" hidden>
+      <div class="link-card" role="dialog" aria-modal="true" aria-labelledby="linkImportTitle">
+        <h3 id="linkImportTitle">批量链接导入</h3>
+        <p class="link-import-current" id="linkImportGame" aria-live="polite">正在准备…</p>
+        <div class="update-progress" id="linkImportProgress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+          <div class="update-progress-bar"><i id="linkImportProgressFill"></i></div>
+          <span id="linkImportProgressText">0%</span>
+        </div>
+        <p id="linkImportDetail" aria-live="polite">等待开始</p>
       </div>
     </div>
 

@@ -39,6 +39,7 @@ contextBridge.exposeInMainWorld('api', {
   exportExcel: (payload) => ipcRenderer.invoke('excel:export', payload),
   batchExport: (accounts) => ipcRenderer.invoke('data:batchExport', accounts),
   batchImport: () => ipcRenderer.invoke('data:batchImport'),
+  batchLinkImport: () => ipcRenderer.invoke('data:batchLinkImport'),
   copyGenshinUrl: () => ipcRenderer.invoke('genshin:copyUrl'),
   openGenshinCacheDir: () => ipcRenderer.invoke('genshin:openCacheDir'),
   fetchGenshin: (knownLatest, link) => ipcRenderer.invoke('genshin:fetch', knownLatest, link),
