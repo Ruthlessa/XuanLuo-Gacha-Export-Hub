@@ -18,6 +18,11 @@ contextBridge.exposeInMainWorld('api', {
   saveStore: (data) => ipcRenderer.invoke('store:save', data),
   loadSettingsSync: () => ipcRenderer.sendSync('settings:getSync'),
   saveSettings: (patch) => ipcRenderer.invoke('settings:save', patch),
+  onConfigUpdated: (cb) => {
+    const listener = () => cb();
+    ipcRenderer.on('config:updated', listener);
+    return () => ipcRenderer.removeListener('config:updated', listener);
+  },
   dataDir: () => ipcRenderer.invoke('app:dataDir'),
   appVersion: () => ipcRenderer.invoke('app:version'),
   checkUpdate: () => ipcRenderer.invoke('app:checkUpdate'),

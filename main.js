@@ -53,11 +53,20 @@ function readConfig() {
 
 function writeConfig(cfg) {
   fs.mkdirSync(configDir(), { recursive: true });
-  fs.writeFileSync(configFile(), JSON.stringify({
+  const text = JSON.stringify({
     version: 1,
     settings: cfg.settings || DEFAULT_SETTINGS,
     active: cfg.active || {},
-  }, null, 2));
+  }, null, 2);
+  let prev = '';
+  try { prev = fs.readFileSync(configFile(), 'utf8'); } catch { /* 首次写入 */ }
+  fs.writeFileSync(configFile(), text);
+  // 文件内容真正变化时通知界面重新加载配置，保证展示实时
+  if (prev !== text) {
+    try {
+      for (const win of BrowserWindow.getAllWindows()) win.webContents.send('config:updated');
+    } catch { /* 窗口尚未创建 */ }
+  }
 }
 
 // ---------- 游戏日志目录（可在设置中自定义） ----------

@@ -2417,6 +2417,27 @@ async function openGameLogDir(game) {
   if (!res?.ok) toast(res?.error || '打开失败');
 }
 
+// 配置文件在后台被改写（如更新时自动写回鸣潮目录）后热重载设置，无需重启
+let configReloadTimer = 0;
+function reloadSettingsFromDisk() {
+  let s;
+  try { s = api.loadSettingsSync(); } catch { return; }
+  applyTheme(s.theme === 'light' ? 'light' : 'dark');
+  applyAutoUpdate(s.autoUpdate !== false);
+  applyAutoUpdateOnSwitch(s.autoUpdateOnSwitch !== false);
+  refreshDataDirInput();
+  refreshGameLogDirs();
+  const active = document.querySelector('.view.active');
+  if (active) {
+    const g = active.id.slice(5);
+    if (GAMES[g]) setAbHint(g);
+  }
+}
+api.onConfigUpdated?.(() => {
+  clearTimeout(configReloadTimer);
+  configReloadTimer = setTimeout(reloadSettingsFromDisk, 150);
+});
+
 // 手动检查更新（自动检查在启动时由主进程执行）
 async function checkUpdate() {
   setUpdateState('checking');
