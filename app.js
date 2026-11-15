@@ -1668,6 +1668,12 @@ $('#accountList').addEventListener('click', async (e) => {
     toast(`已切换到账号 ${uid}`);
   } else if (del) {
     const [game, uid] = del.dataset.del.split(':');
+    // 先删文件，失败则保留账号，避免界面显示已删除但重启后复活
+    const ok = await api.removeAccount(game, uid);
+    if (!ok) {
+      toast(`账号 ${uid} 的文件删除失败，请检查数据目录权限`);
+      return;
+    }
     store.accounts[game] = accountsOf(game).filter((a) => a.uid !== uid);
     if (store.active[game] === uid) {
       store.active[game] = accountsOf(game)[0]?.uid || null;
@@ -1791,7 +1797,8 @@ const FETCH_API = {
   genshin: { call: (k, link) => api.fetchGenshin(k, link), on: (cb) => api.onFetchProgress(cb) },
   hsr: { call: (k, link) => api.fetchHsr(k, link), on: (cb) => api.onHsrProgress(cb) },
   zzz: { call: (k, link) => api.fetchZzz(k, link), on: (cb) => api.onZzzProgress(cb) },
-  wuwa: { call: (k, link) => api.fetchWuwa(link), on: (cb) => api.onWuwaProgress(cb) }, // 全量拉取，无需增量参数
+  // 全量拉取，无需增量参数；自动更新不触发目录查找，手动更新才查找
+  wuwa: { call: (k, link, priority) => api.fetchWuwa(link, priority !== 'auto'), on: (cb) => api.onWuwaProgress(cb) },
 };
 // 更新优先级：链接 > 手动 > 自动；更高优先级会强制打断正在进行的低优先级更新
 const FETCH_PRIORITY = { auto: 1, manual: 2, link: 3 };
@@ -1827,31 +1834,48 @@ async function fetchOnline(game, link, onProgress, onStage, priority = 'auto') {
   const hint = $('[data-role="abHint"]', view);
   if (btn) btn.disabled = priority !== 'auto'; // 自动更新期间保留手动按钮，便于手动优先打断
   if (hint) hint.textContent = link ? '正在通过链接读取…' : '正在读取游戏缓存…';
-  let timeoutId = null, timedOut = false;
+  let timeoutId = null, timedOut = false, armTimeout = () => {};
+  // 3 秒无数据判定超时；主进程查找目录期间暂停计时，查找结束后重新计时
+  const timeoutPromise = new Promise((resolve) => {
+    armTimeout = () => {
+      clearTimeout(timeoutId);
+      timeoutId = setTimeout(() => { timedOut = true; resolve(FETCH_TIMEOUT); }, FETCH_DATA_TIMEOUT);
+    };
+    armTimeout();
+  });
   req.off = fetchApi.on((p) => {
     if (req.superseded) return;
+    if (p?.searching === true) {
+      // 目录查找阶段：暂停超时计时，不计为已获取数据
+      clearTimeout(timeoutId);
+      timeoutId = null;
+      if (hint) hint.textContent = '正在查找游戏目录…';
+      return;
+    }
+    if (p?.searching === false) { armTimeout(); return; }
     clearTimeout(timeoutId);
     timeoutId = null;
     if (hint) hint.textContent = `正在获取「${p.label}」第 ${p.page} 页（新增 ${p.total} 条）`;
     if (onProgress) onProgress(p);
   });
-  const timeoutPromise = new Promise((resolve) => {
-    timeoutId = setTimeout(() => { timedOut = true; resolve(FETCH_TIMEOUT); }, FETCH_DATA_TIMEOUT);
-  });
   try {
-    const res = await Promise.race([fetchApi.call(knownLatest(game), link), timeoutPromise]);
+    const res = await Promise.race([fetchApi.call(knownLatest(game), link, priority), timeoutPromise]);
     if (res === FETCH_TIMEOUT) {
       req.off?.();
       if (activeFetch[game] === req) delete activeFetch[game];
       fetching[game] = false;
       if (btn) btn.disabled = false;
       setAbHint(game);
-      toast(`「${GAMES[game].name}」3 秒内未获取到数据，已超时`);
+      if (priority !== 'auto') toast(`「${GAMES[game].name}」3 秒内未获取到数据，已超时`);
       return { ok: false, error: '3 秒内未获取到数据，已超时', connectTimeout: true };
     }
     if (req.superseded) return { ok: false, error: '已被更高优先级的更新打断', superseded: true };
     if (!res) return { ok: false, error: '未返回获取结果' };
-    if (res.error) { toast(res.error); return { ok: false, error: res.error }; }
+    if (res.error) {
+      // 自动更新静默失败，避免周期性打扰；手动与链接更新正常提示
+      if (priority !== 'auto') toast(res.error);
+      return { ok: false, error: res.error };
+    }
     await onStage?.('merge');
     if (req.superseded) return { ok: false, error: '已被更高优先级的更新打断', superseded: true };
     const added = applyUids(game, res.uids);

@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld('winCtl', {
 contextBridge.exposeInMainWorld('api', {
   loadStore: () => ipcRenderer.invoke('store:load'),
   saveStore: (data) => ipcRenderer.invoke('store:save', data),
+  removeAccount: (game, uid) => ipcRenderer.invoke('store:removeAccount', game, uid),
   loadSettingsSync: () => ipcRenderer.sendSync('settings:getSync'),
   saveSettings: (patch) => ipcRenderer.invoke('settings:save', patch),
   onConfigUpdated: (cb) => {
@@ -55,7 +56,7 @@ contextBridge.exposeInMainWorld('api', {
   fetchZzz: (knownLatest, link) => ipcRenderer.invoke('zzz:fetch', knownLatest, link),
   copyZzzUrl: () => ipcRenderer.invoke('zzz:copyUrl'),
   openZzzCacheDir: () => ipcRenderer.invoke('zzz:openCacheDir'),
-  fetchWuwa: (link) => ipcRenderer.invoke('wuwa:fetch', link),
+  fetchWuwa: (link, allowScan = true) => ipcRenderer.invoke('wuwa:fetch', link, allowScan),
   importWuwaExcel: () => ipcRenderer.invoke('wuwa:importExcel'),
   copyWuwaUrl: () => ipcRenderer.invoke('wuwa:copyUrl'),
   openWuwaCacheDir: () => ipcRenderer.invoke('wuwa:openCacheDir'),

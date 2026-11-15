@@ -1,6 +1,7 @@
 const { app, BrowserWindow, ipcMain, dialog, shell, clipboard } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const fsp = fs.promises;
 const ExcelJS = require('exceljs');
 const { execFile } = require('child_process');
 const { autoUpdater } = require('electron-updater');
@@ -127,8 +128,15 @@ function wuwaInstallCandidates() {
 function isWuwaGameDir(dir) {
   return fs.existsSync(path.join(dir, 'Client', 'Saved', 'Logs'));
 }
+// 路径所在盘符是否在线（外置盘未挂载时避免误改配置）
+function pathDriveOnline(p) {
+  const m = /^([a-zA-Z]):/.exec(String(p || ''));
+  return m ? fs.existsSync(`${m[1]}:\\`) : true;
+}
 function detectWuwaLogDir() {
-  return wuwaInstallCandidates().find(isWuwaGameDir) || scanWuwaGameDir();
+  // 只做低成本的常见目录检测，全盘扫描交给更新流程异步执行
+  const cached = wuwaScanCache.dir && isWuwaGameDir(wuwaScanCache.dir) ? wuwaScanCache.dir : '';
+  return wuwaInstallCandidates().find(isWuwaGameDir) || cached;
 }
 function detectLogDir(game) {
   switch (game) {
@@ -205,6 +213,8 @@ ipcMain.handle('store:load', () => {
   }
 });
 
+const SAFE_UID = /^[0-9A-Za-z_-]+$/; // 防止 uid 被构造为路径穿越
+
 ipcMain.handle('store:save', (e, data) => {
   try {
     fs.mkdirSync(dataDir(), { recursive: true });
@@ -214,17 +224,23 @@ ipcMain.handle('store:save', (e, data) => {
     for (const [game, list] of Object.entries(data.accounts || {})) {
       const dir = path.join(dataDir(), game);
       fs.mkdirSync(dir, { recursive: true });
-      const keep = new Set();
+      // 只写入账号文件，不在保存时删除磁盘数据
       for (const acc of list) {
-        if (!acc?.uid) continue;
-        keep.add(`${acc.uid}.json`);
+        if (!acc?.uid || !SAFE_UID.test(String(acc.uid))) continue;
         fs.writeFileSync(path.join(dir, `${acc.uid}.json`), JSON.stringify(acc));
       }
-      // 清理已删除账号对应的文件
-      for (const f of fs.readdirSync(dir)) {
-        if (f.endsWith('.json') && !keep.has(f)) fs.rmSync(path.join(dir, f));
-      }
     }
+    return true;
+  } catch {
+    return false;
+  }
+});
+
+// 删除账号：只有显式删除才移除磁盘文件
+ipcMain.handle('store:removeAccount', (e, game, uid) => {
+  try {
+    if (!GAMES[game] || !SAFE_UID.test(String(uid))) return false;
+    fs.rmSync(path.join(dataDir(), game, `${uid}.json`), { force: true });
     return true;
   } catch {
     return false;
@@ -270,10 +286,12 @@ ipcMain.handle('gamelog:set', (e, game, dir) => {
   return true;
 });
 
-ipcMain.handle('gamelog:reset', (e, game) => {
+ipcMain.handle('gamelog:reset', async (e, game) => {
   // 清除已保存路径并重新自动检测写入
   saveGameLogDir(game, '');
-  const detected = detectLogDir(game);
+  let detected = detectLogDir(game);
+  // 鸣潮允许用户主动触发一次异步全盘扫描，不阻塞界面
+  if (!detected && game === 'wuwa') detected = await scanWuwaGameDir(true);
   if (detected) saveGameLogDir(game, detected);
   return true;
 });
@@ -789,20 +807,36 @@ function wuwaLogCandidates(dir) {
   return out;
 }
 
-// 从注册表卸载信息找安装路径
+// 从注册表卸载信息找安装路径（64 位 / 32 位 / 当前用户）
 function readWuwaRegistry() {
-  return new Promise((resolve) => {
-    execFile('reg', ['query', 'HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall', '/s', '/f', 'Wuthering', '/d'],
+  const roots = [
+    'HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
+    'HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
+    'HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
+  ];
+  const query = (root) => new Promise((resolve) => {
+    execFile('reg', ['query', root, '/s', '/f', 'Wuthering', '/d'],
       { windowsHide: true, timeout: 10000 }, (err, stdout) => {
         if (err || !stdout) return resolve('');
         const m = stdout.match(/InstallPath\s+REG_SZ\s+(.+)/i);
         resolve(m ? m[1].trim() : '');
       });
   });
+  return (async () => {
+    for (const root of roots) {
+      const found = await query(root);
+      if (found) return found;
+    }
+    return '';
+  })();
 }
 
 // 按固定叶子目录名搜索，父目录任意；Program Files 作为独立起点，整体最多 12 秒
 const WUWA_SKIP_DIRS = new Set(['windows', '$recycle.bin', 'system volume information', 'programdata', 'program files', 'program files (x86)', 'node_modules', 'appdata']);
+// 扫描失败后 5 分钟内不重复全盘扫描，避免反复触发造成卡顿
+const WUWA_SCAN_RETRY_MS = 5 * 60 * 1000;
+let wuwaScanCache = { at: 0, dir: '' };
+let wuwaScanTask = null;
 function wuwaScanRoots() {
   const roots = [];
   for (let c = 67; c <= 90; c++) {
@@ -812,55 +846,77 @@ function wuwaScanRoots() {
   }
   return roots;
 }
-function scanWuwaGameDir() {
-  const deadline = Date.now() + 12000;
-  const seen = new Set();
-  let result = '';
-  const visit = (dir, depth) => {
-    if (result || Date.now() > deadline) return;
-    let entries;
-    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
-    const next = [];
-    for (const e of entries) {
-      if (!e.isDirectory()) continue;
-      const name = e.name.toLowerCase();
-      const full = path.join(dir, e.name);
-      if (name === WUWA_CLIENT_DIR) {
-        if (!seen.has(full.toLowerCase()) && isWuwaGameDir(full)) {
-          seen.add(full.toLowerCase());
-          result = full;
-          return;
-        }
-        continue;
-      }
-      if (WUWA_SKIP_DIRS.has(name)) continue;
-      // 疑似启动器/游戏目录优先下探，减少无关分支
-      next.push({ full, hint: /wuthering|^mc$|games?|launcher|client/i.test(e.name) ? 1 : 0 });
+// 异步遍历，避免同步 readdir 阻塞主进程；force 为真时忽略失败缓存（手动查找）
+async function scanWuwaGameDir(force = false) {
+  if (wuwaScanCache.dir && isWuwaGameDir(wuwaScanCache.dir)) return wuwaScanCache.dir;
+  if (!force && !wuwaScanCache.dir && Date.now() - wuwaScanCache.at < WUWA_SCAN_RETRY_MS) return '';
+  if (wuwaScanTask) return wuwaScanTask;
+  wuwaScanTask = (async () => {
+    const deadline = Date.now() + 12000;
+    let found = '';
+    for (const root of wuwaScanRoots()) {
+      found = await scanWuwaTree(root, 0, deadline);
+      if (found || Date.now() > deadline) break;
     }
-    if (depth >= 3) return;
-    next.sort((a, b) => b.hint - a.hint);
-    for (const d of next.slice(0, 30)) visit(d.full, depth + 1);
-  };
-  for (const root of wuwaScanRoots()) {
-    visit(root, 0);
-    if (result || Date.now() > deadline) break;
+    wuwaScanCache = { at: Date.now(), dir: found };
+    return found;
+  })();
+  try { return await wuwaScanTask; } finally { wuwaScanTask = null; }
+}
+async function scanWuwaTree(dir, depth, deadline) {
+  if (Date.now() > deadline) return '';
+  let entries;
+  try { entries = await fsp.readdir(dir, { withFileTypes: true }); } catch { return ''; }
+  const next = [];
+  for (const e of entries) {
+    if (!e.isDirectory()) continue;
+    const name = e.name.toLowerCase();
+    const full = path.join(dir, e.name);
+    if (name === WUWA_CLIENT_DIR) {
+      if (isWuwaGameDir(full)) return full;
+      continue;
+    }
+    if (WUWA_SKIP_DIRS.has(name)) continue;
+    // 疑似启动器/游戏目录优先下探，减少无关分支
+    next.push({ full, hint: /wuthering|^mc$|games?|launcher|client/i.test(e.name) ? 1 : 0 });
   }
-  return result;
+  if (depth >= 3) return '';
+  next.sort((a, b) => b.hint - a.hint);
+  for (const d of next.slice(0, 30)) {
+    const found = await scanWuwaTree(d.full, depth + 1, deadline);
+    if (found) return found;
+    if (Date.now() > deadline) return '';
+  }
+  return '';
 }
 
 let lastWuwaLogDir = null;
-async function readWuwaUrl() {
+async function readWuwaUrl(allowScan = true, notify) {
   const dirs = [];
   const push = (d) => { if (d && !dirs.includes(d) && wuwaLogCandidates(d).length) dirs.push(d); };
   const custom = getGameLogDir('wuwa');
   if (custom) push(custom);
-  if (!dirs.length) {
+  // 仅当配置目录不存在（未配置或路径已失效）时才查找；目录存在只是暂无日志则不查找
+  const needSearch = !custom || !fs.existsSync(custom);
+  // 自动更新只使用已保存目录，不触发查找；手动更新才查注册表、常见目录与全盘扫描
+  if (!dirs.length && allowScan && needSearch) {
     push(await readWuwaRegistry());
     wuwaInstallCandidates().forEach(push);
   }
-  // 配置目录失效或未找到：自行查找，命中后写回 app.config.json
-  if (!dirs.length) push(scanWuwaGameDir());
-  if (dirs.length && (!custom || !wuwaLogCandidates(custom).length)) saveGameLogDir('wuwa', dirs[0]);
+  // 配置目录失效或未找到：异步自行查找，命中后写回 app.config.json
+  if (!dirs.length && allowScan && needSearch) {
+    notify?.({ searching: true }); // 查找阶段较长，通知界面暂停 3 秒超时计时
+    try {
+      push(await scanWuwaGameDir(true));
+    } finally {
+      notify?.({ searching: false });
+    }
+  }
+  if (dirs.length && dirs[0] !== custom && !(custom && wuwaLogCandidates(custom).length)) {
+    // 原路径所在盘符离线（外置盘未挂载等）时保留用户设置，避免误覆盖
+    const driveOffline = custom && !fs.existsSync(custom) && !pathDriveOnline(custom);
+    if (!driveOffline) saveGameLogDir('wuwa', dirs[0]);
+  }
 
   for (const dir of dirs) {
     for (const logFile of wuwaLogCandidates(dir)) {
@@ -868,7 +924,16 @@ async function readWuwaUrl() {
       if (link) { lastWuwaLogDir = path.dirname(logFile); return { url: link }; }
     }
   }
-  if (!dirs.length) return { error: '未找到鸣潮游戏目录，请先运行一次游戏' };
+  if (!dirs.length) {
+    if (custom && fs.existsSync(custom)) {
+      return { error: '目录中暂未找到日志，请先运行一次游戏并打开「唤取记录」页面' };
+    }
+    return {
+      error: allowScan
+        ? '未找到鸣潮游戏目录，请先运行一次游戏'
+        : '鸣潮目录未配置或已失效，请手动更新一次以自动查找',
+    };
+  }
   return { error: '日志中未找到唤取链接，请先在游戏内打开一次「唤取记录」页面' };
 }
 
@@ -886,10 +951,10 @@ async function fetchJsonPost(url, body) {
 // 卡池类型（上游 POOL_NAMES）：1/2 活动 3/4 常驻 5-7 新手系 8/9 新旅 10/11 联动 12/13 忆旅
 const WUWA_TYPES = GAMES.wuwa.fetchTypes;
 
-ipcMain.handle('wuwa:fetch', async (ev, link) => {
+ipcMain.handle('wuwa:fetch', async (ev, link, allowScan) => {
   const send = (p) => { if (!ev.sender.isDestroyed()) ev.sender.send('wuwa:progress', p); };
   try {
-    const found = link ? { url: link } : await readWuwaUrl();
+    const found = link ? { url: link } : await readWuwaUrl(allowScan !== false, send);
     if (found.error) return { error: found.error };
     const qIdx = found.url.indexOf('?', found.url.indexOf('#'));
     if (qIdx < 0) return { error: '链接格式不正确' };
