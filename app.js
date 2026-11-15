@@ -1793,32 +1793,67 @@ const FETCH_API = {
   zzz: { call: (k, link) => api.fetchZzz(k, link), on: (cb) => api.onZzzProgress(cb) },
   wuwa: { call: (k, link) => api.fetchWuwa(link), on: (cb) => api.onWuwaProgress(cb) }, // 全量拉取，无需增量参数
 };
-async function fetchOnline(game, link, onProgress, shouldCancel, onStage) {
-  if (fetching[game]) return { ok: false, error: '该游戏正在更新' };
+// 更新优先级：链接 > 手动 > 自动；更高优先级会强制打断正在进行的低优先级更新
+const FETCH_PRIORITY = { auto: 1, manual: 2, link: 3 };
+// 所有更新共用的连接超时：3 秒内没有拿到任何数据即超时
+const FETCH_DATA_TIMEOUT = 3000;
+const FETCH_TIMEOUT = Symbol('fetchTimeout');
+const activeFetch = {}; // game -> { rank, superseded, off }
+
+async function fetchOnline(game, link, onProgress, onStage, priority = 'auto') {
+  const rank = FETCH_PRIORITY[priority] || FETCH_PRIORITY.auto;
+  const prev = activeFetch[game];
+  if (prev && prev.rank >= rank) return { ok: false, error: '该游戏正在更新' };
+  if (prev) {
+    // 强制打断：立刻摘掉旧请求的进度监听，旧结果不再写入数据
+    prev.superseded = true;
+    prev.off?.();
+    if (prev.rank === FETCH_PRIORITY.auto) {
+      toast(`已打断「${GAMES[game].name}」的自动更新`);
+    }
+  }
   const fetchApi = FETCH_API[game];
   if (!fetchApi) {
     toast(`「${GAMES[game].name}」在线获取待接入`);
     return { ok: false, error: '在线获取待接入' };
   }
+  const req = { rank, superseded: false, off: null };
+  activeFetch[game] = req;
   fetching[game] = true;
   lastUpdateTime[game] = Date.now();
   lastSwitchFetchTime[game] = Date.now(); // 手动/自动更新均重置切换冷却
   const view = $(`#view-${game}`);
   const btn = $('[data-act="update"]', view);
   const hint = $('[data-role="abHint"]', view);
-  if (btn) btn.disabled = true;
+  if (btn) btn.disabled = priority !== 'auto'; // 自动更新期间保留手动按钮，便于手动优先打断
   if (hint) hint.textContent = link ? '正在通过链接读取…' : '正在读取游戏缓存…';
-  const off = fetchApi.on((p) => {
+  let timeoutId = null, timedOut = false;
+  req.off = fetchApi.on((p) => {
+    if (req.superseded) return;
+    clearTimeout(timeoutId);
+    timeoutId = null;
     if (hint) hint.textContent = `正在获取「${p.label}」第 ${p.page} 页（新增 ${p.total} 条）`;
     if (onProgress) onProgress(p);
   });
+  const timeoutPromise = new Promise((resolve) => {
+    timeoutId = setTimeout(() => { timedOut = true; resolve(FETCH_TIMEOUT); }, FETCH_DATA_TIMEOUT);
+  });
   try {
-    const res = await fetchApi.call(knownLatest(game), link);
-    if (shouldCancel?.()) return { ok: false, error: '连接超时，已跳过', connectTimeout: true };
+    const res = await Promise.race([fetchApi.call(knownLatest(game), link), timeoutPromise]);
+    if (res === FETCH_TIMEOUT) {
+      req.off?.();
+      if (activeFetch[game] === req) delete activeFetch[game];
+      fetching[game] = false;
+      if (btn) btn.disabled = false;
+      setAbHint(game);
+      toast(`「${GAMES[game].name}」3 秒内未获取到数据，已超时`);
+      return { ok: false, error: '3 秒内未获取到数据，已超时', connectTimeout: true };
+    }
+    if (req.superseded) return { ok: false, error: '已被更高优先级的更新打断', superseded: true };
     if (!res) return { ok: false, error: '未返回获取结果' };
     if (res.error) { toast(res.error); return { ok: false, error: res.error }; }
     await onStage?.('merge');
-    if (shouldCancel?.()) return { ok: false, error: '连接超时，已跳过', connectTimeout: true };
+    if (req.superseded) return { ok: false, error: '已被更高优先级的更新打断', superseded: true };
     const added = applyUids(game, res.uids);
     await save();
     renderGame(game);
@@ -1828,10 +1863,15 @@ async function fetchOnline(game, link, onProgress, shouldCancel, onStage) {
     toast(added ? `更新完成：新增 ${added} 条记录` : '数据已是最新');
     return { ok: true, added };
   } finally {
-    off();
-    if (btn) btn.disabled = false;
-    fetching[game] = false;
-    setAbHint(game);
+    clearTimeout(timeoutId);
+    req.off();
+    // 被打断或已超时的请求不再改动界面与状态，交由接管的新请求负责
+    if (!req.superseded && !timedOut) {
+      if (btn) btn.disabled = false;
+      fetching[game] = false;
+      if (activeFetch[game] === req) delete activeFetch[game];
+      setAbHint(game);
+    }
   }
 }
 
@@ -1934,7 +1974,6 @@ function closeLinkImportNotice() {
   $('#linkImportNoticeMask').hidden = true;
 }
 
-const LINK_CONNECT_TIMEOUT = 3000;
 const LINK_STEP_COOLDOWN = 400;
 function createLinkImportStepper() {
   let chain = Promise.resolve(), cancelled = false;
@@ -1990,19 +2029,15 @@ async function importLinks() {
       await stepper.advance(1, '正在连接抽卡记录服务…（1/3）');
       let result;
       try {
-        let timedOut = false, timer, countdownTimer, countdown = 1, recordStepStarted = false;
-        const clearConnectionTimers = () => {
-          clearTimeout(timer);
-          clearInterval(countdownTimer);
-        };
+        let countdownTimer, countdown = 1, recordStepStarted = false;
         countdownTimer = setInterval(() => {
-          if (timedOut || countdown >= 3) return;
+          if (countdown >= 3) return;
           countdown++;
           $('#linkImportDetail').textContent = `正在连接抽卡记录服务…（${countdown}/3）`;
         }, 1000);
-        const fetchPromise = fetchOnline(game, res.links[game], (p) => {
-          clearConnectionTimers();
-          if (!timedOut) {
+        try {
+          result = await fetchOnline(game, res.links[game], (p) => {
+            clearInterval(countdownTimer);
             const detail = `正在获取「${p.label}」第 ${p.page} 页（新增 ${p.total} 条）`;
             if (!recordStepStarted) {
               recordStepStarted = true;
@@ -2010,35 +2045,24 @@ async function importLinks() {
             } else {
               $('#linkImportDetail').textContent = detail;
             }
-          }
-        }, () => timedOut, async (stage) => {
-          if (stage === 'merge') {
-            clearConnectionTimers();
-            if (!recordStepStarted) {
-              recordStepStarted = true;
-              await stepper.advance(2, '已连接，正在整理获取结果…');
+          }, async (stage) => {
+            if (stage === 'merge') {
+              clearInterval(countdownTimer);
+              if (!recordStepStarted) {
+                recordStepStarted = true;
+                await stepper.advance(2, '已连接，正在整理获取结果…');
+              }
+              await stepper.advance(3, '正在合并并保存抽卡记录…');
+            } else if (stage === 'done') {
+              await stepper.advance(4, `${name}更新完成`);
             }
-            await stepper.advance(3, '正在合并并保存抽卡记录…');
-          } else if (stage === 'done') {
-            await stepper.advance(4, `${name}更新完成`);
-          }
-        });
-        const timeoutPromise = new Promise((resolve) => {
-          timer = setTimeout(() => {
-            timedOut = true;
-            stepper.cancel();
-            resolve({ ok: false, error: '连接抽卡记录服务超过 3 秒', connectTimeout: true });
-          }, LINK_CONNECT_TIMEOUT);
-        });
-        try {
-          result = await Promise.race([fetchPromise, timeoutPromise]);
+          }, 'link');
         } finally {
-          clearConnectionTimers();
+          clearInterval(countdownTimer);
         }
         if (!result?.ok) stepper.cancel();
         if (result?.connectTimeout) {
-          $('#linkImportDetail').textContent = '连接超过 3 秒，已跳过';
-          toast(`${name}：连接抽卡记录服务超过 3 秒，已跳过`);
+          $('#linkImportDetail').textContent = '3 秒内未获取到数据，已跳过';
         }
       } catch (e) {
         stepper.cancel();
@@ -2105,7 +2129,7 @@ function submitLinkUpdate() {
   if (!/^https?:\/\//i.test(url)) return toast('链接需以 http:// 或 https:// 开头');
   const game = linkGame;
   closeLinkUpdate();
-  fetchOnline(game, url);
+  fetchOnline(game, url, undefined, undefined, 'link');
 }
 
 // 账号选择弹窗：点击账号切换
@@ -2131,7 +2155,7 @@ document.addEventListener('click', (e) => {
   const game = btn.closest('[data-game]')?.dataset.game;
 
   if (act === 'import' && game) return importData(game);
-  if (act === 'update' && game) return fetchOnline(game);
+  if (act === 'update' && game) return fetchOnline(game, undefined, undefined, undefined, 'manual');
   if (act === 'linkUpdate' && game) return openLinkUpdate(game);
   if (act === 'closeLink') return closeLinkUpdate();
   if (act === 'closeAcctSelect') return closeAcctSelect();
