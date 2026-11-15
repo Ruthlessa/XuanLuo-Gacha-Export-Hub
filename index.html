@@ -648,7 +648,7 @@
               <div class="about-body">
                 <svg class="about-logo" viewBox="0 0 24 24" fill="none"><path fill-rule="evenodd" d="M12 2 L13.3 10.7 L22 12 L13.3 13.3 L12 22 L10.7 13.3 L2 12 L10.7 10.7 Z M12 9 L14.6 12 L12 15 L9.4 12 Z" fill="currentColor"/></svg>
                 <div>
-                  <b>XuanLuo Gacha Export Hub <span class="about-version">v1.8.1</span></b>
+                  <b>XuanLuo Gacha Export Hub <span class="about-version">v1.8.2</span></b>
                   <p>原神祈愿 · 崩铁跃迁 · 绝区零调频 · 鸣潮唤取的抽卡记录管理与导出工具。</p>
                   <button class="gh-link" data-act="openGithub">github.com/XLoDream/XuanLuo-Gacha-Export-Hub<span>↗</span></button>
                   <p class="hint" id="aboutVersions">运行环境检测中…</p>
@@ -744,6 +744,18 @@
         <div class="update-actions">
           <button class="btn-sm" data-act="closeRemark">取消</button>
           <button class="btn-sm primary" data-act="saveRemark">保存</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 清空账号确认弹窗 -->
+    <div class="update-mask" id="clearAccountsMask" hidden>
+      <div class="link-card" role="dialog" aria-modal="true" aria-labelledby="clearAccountsTitle">
+        <h3 id="clearAccountsTitle">清空账号</h3>
+        <p id="clearAccountsSub">将删除该游戏在本地的全部账号与抽卡记录，此操作不可撤销。</p>
+        <div class="update-actions">
+          <button class="btn-sm" data-act="closeClearAccounts">取消</button>
+          <button class="btn-sm danger" data-act="confirmClearAccounts">确认清空</button>
         </div>
       </div>
     </div>

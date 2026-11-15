@@ -1598,7 +1598,7 @@ function renderAccounts() {
     </div>`;
   }).join('') : '<div class="empty small"><b>该游戏暂无账号</b><p>前往对应游戏页面点击「导入」载入数据文件。</p></div>';
 
-  wrap.innerHTML = `<div class="acct-tabs">${tabs}</div><div class="acct-panel">${rows}</div>`;
+  wrap.innerHTML = `<div class="acct-tabs">${tabs}</div>${list.length ? `<div class="acct-panel-head"><button class="btn-sm danger" data-clear="${acctTab}">清空本游戏账号</button></div>` : ''}<div class="acct-panel">${rows}</div>`;
 }
 
 // ---------- 账号备注弹窗编辑 ----------
@@ -1647,6 +1647,43 @@ $('#remarkInput').addEventListener('keydown', (e) => {
   else if (e.key === 'Escape') { e.preventDefault(); closeRemarkEdit(); }
 });
 
+// ---------- 清空账号确认弹窗 ----------
+let clearAcctGame = '';
+function openClearAccounts(game) {
+  const n = accountsOf(game).length;
+  if (!n) return;
+  clearAcctGame = game;
+  $('#clearAccountsTitle').textContent = `清空「${GAMES[game].name}」账号`;
+  $('#clearAccountsSub').textContent = `将删除该游戏在本地的 ${n} 个账号及全部抽卡记录，此操作不可撤销。建议先做一次备份导出。`;
+  $('#clearAccountsMask').hidden = false;
+}
+function closeClearAccounts() {
+  $('#clearAccountsMask').hidden = true;
+  clearAcctGame = '';
+}
+async function confirmClearAccounts() {
+  const game = clearAcctGame;
+  if (!game) return;
+  if (fetching[game]) {
+    toast(`「${GAMES[game].name}」正在更新，请等更新结束后再清空`);
+    return;
+  }
+  const res = await api.clearAccounts(game);
+  if (!res?.ok) {
+    toast(res?.error || '清空失败，请检查数据目录权限');
+    return;
+  }
+  store.accounts[game] = [];
+  store.active[game] = null;
+  await save();
+  renderGame(game);
+  renderOverview();
+  renderAccounts();
+  if (game === 'hsr') renderHsrTeam();
+  closeClearAccounts();
+  toast(`已清空「${GAMES[game].name}」账号，共 ${res.removed} 个`);
+}
+
 $('#accountList').addEventListener('click', async (e) => {
   const tab = e.target.closest('[data-tab]');
   if (tab) { acctTab = tab.dataset.tab; renderAccounts(); return; }
@@ -1656,6 +1693,8 @@ $('#accountList').addEventListener('click', async (e) => {
     openRemarkEdit(game, uid);
     return;
   }
+  const clr = e.target.closest('[data-clear]');
+  if (clr) { openClearAccounts(clr.dataset.clear); return; }
   const sw = e.target.closest('[data-switch]');
   const del = e.target.closest('[data-del]');
   if (sw) {
@@ -1717,24 +1756,58 @@ function normalize(game, item) {
   };
 }
 
+// 备份文件记录校验：字段缺失或异常时丢弃，避免坏数据进入统计
+function sanitizeBackupRecord(game, r) {
+  if (!r || typeof r !== 'object') return null;
+  const id = String(r.id ?? '').trim();
+  const time = typeof r.time === 'number' ? String(r.time) : String(r.time ?? '').trim();
+  const name = String(r.name ?? '').trim();
+  const rank = Number(r.rank);
+  if (!id || id.length > 100) return null;
+  if (!time || time.length > 40) return null;
+  if (!name || name.length > 200) return null;
+  if (!Number.isInteger(rank) || rank < 1 || rank > 5) return null;
+  if (!GAMES[game].pools.some((p) => p.key === r.pool)) return null;
+  return {
+    id,
+    time,
+    name,
+    type: String(r.type ?? '').slice(0, 100),
+    rank,
+    pool: r.pool,
+    gt: String(r.gt ?? '').slice(0, 20),
+  };
+}
+
 // 合并账号记录（导入/在线获取共用），返回新增条数
 function applyUids(game, uids) {
   let added = 0;
+  let firstUid = '';
   uids.forEach(({ uid, list }) => {
     uid = uid || '未知UID';
+    if (!firstUid) firstUid = uid;
     let acc = accountsOf(game).find((a) => a.uid === uid);
+    const ids = new Set((acc?.records || []).map((r) => r.id));
+    const fresh = [];
+    for (const item of list) {
+      const r = normalize(game, item);
+      if (!r || !r.id || ids.has(r.id)) continue;
+      ids.add(r.id); // 同时去掉导入批次内的重复
+      fresh.push(r);
+    }
+    if (!fresh.length) return; // 无新增不刷新时间，也不创建空账号
     if (!acc) {
       acc = { uid, records: [], updatedAt: 0, remark: '' };
       accountsOf(game).push(acc);
     }
-    const ids = new Set(acc.records.map((r) => r.id));
-    const fresh = list.map((i) => normalize(game, i)).filter((r) => r && !ids.has(r.id));
     acc.records.push(...fresh);
     acc.records.sort(cmpRec);
     acc.updatedAt = Date.now();
     added += fresh.length;
-    store.active[game] = uid;
   });
+  if (firstUid && accountsOf(game).some((a) => a.uid === firstUid)) {
+    store.active[game] = firstUid; // 多账号文件统一选中首个，而不是最后一个
+  }
   return added;
 }
 
@@ -1862,6 +1935,8 @@ async function fetchOnline(game, link, onProgress, onStage, priority = 'auto') {
     const res = await Promise.race([fetchApi.call(knownLatest(game), link, priority), timeoutPromise]);
     if (res === FETCH_TIMEOUT) {
       req.off?.();
+      // 已被打断的旧请求即使计时器后触发，也不能改动新请求的按钮、提示与更新状态
+      if (req.superseded) return { ok: false, error: '已被更高优先级的更新打断', superseded: true };
       if (activeFetch[game] === req) delete activeFetch[game];
       fetching[game] = false;
       if (btn) btn.disabled = false;
@@ -1958,29 +2033,41 @@ async function importAll() {
   if (!res) return;
   if (res.error) { toast(res.error); return; }
 
-  let addedAcc = 0, addedRec = 0;
+  let addedAcc = 0, addedRec = 0, skippedRec = 0;
   const selectedGames = [];
   for (const [game, list] of Object.entries(res.accounts)) {
     if (!GAMES[game] || !list.length) continue;
     for (const imp of list) {
       let acc = accountsOf(game).find((a) => a.uid === imp.uid);
+      const ids = new Set(acc?.records.map((r) => r.id) || []);
+      const fresh = [];
+      for (const r of imp.records) {
+        const rec = sanitizeBackupRecord(game, r);
+        if (!rec) { skippedRec += 1; continue; }
+        if (ids.has(rec.id)) continue;
+        ids.add(rec.id); // 同时去掉备份文件内部的重复记录
+        fresh.push(rec);
+      }
+      // 全新账号且没有任何有效记录时不创建，避免生成空账号
+      if (!acc && !fresh.length) continue;
       if (!acc) {
         acc = { uid: imp.uid, records: [], updatedAt: 0, remark: '' };
         accountsOf(game).push(acc);
         addedAcc += 1;
       }
-      // 备注：仅当导入备注非空时覆盖
-      if (imp.remark) acc.remark = imp.remark;
-      const ids = new Set(acc.records.map((r) => r.id));
-      const fresh = imp.records.filter((r) => r && r.id && !ids.has(r.id));
+      // 备注：本地已填写时保留本地，避免旧备份覆盖用户备注
+      if (imp.remark && !acc.remark) acc.remark = imp.remark;
       acc.records.push(...fresh);
       acc.records.sort(cmpRec);
       if (imp.updatedAt > acc.updatedAt) acc.updatedAt = imp.updatedAt;
       addedRec += fresh.length;
     }
-    // 自动选中该游戏导入的第一个账号
-    store.active[game] = list[0].uid;
-    selectedGames.push(GAMES[game].name);
+    // 自动选中该游戏导入的第一个有效账号
+    const first = list.find((imp) => accountsOf(game).some((a) => a.uid === imp.uid));
+    if (first) {
+      store.active[game] = first.uid;
+      selectedGames.push(GAMES[game].name);
+    }
   }
   await save();
   GAME_ORDER.forEach((g) => renderGame(g));
@@ -1988,7 +2075,8 @@ async function importAll() {
   if (accountsOf('hsr').length) renderHsrTeam();
   renderAccounts();
   const sel = selectedGames.length ? `已选中：${selectedGames.join('、')} 的首个账号` : '';
-  toast(`导入完成：共 ${res.totalAcc} 个账号，新增 ${addedAcc} 个账号、${addedRec} 条记录${sel ? '；' + sel : ''}`);
+  const skip = skippedRec ? `，跳过 ${skippedRec} 条字段异常记录` : '';
+  toast(`导入完成：共 ${res.totalAcc} 个账号，新增 ${addedAcc} 个账号、${addedRec} 条记录${skip}${sel ? '；' + sel : ''}`);
 }
 
 function openLinkImportNotice() {
@@ -2184,6 +2272,8 @@ document.addEventListener('click', (e) => {
   if (act === 'closeLink') return closeLinkUpdate();
   if (act === 'closeAcctSelect') return closeAcctSelect();
   if (act === 'closeRemark') return closeRemarkEdit();
+  if (act === 'closeClearAccounts') return closeClearAccounts();
+  if (act === 'confirmClearAccounts') return confirmClearAccounts();
   if (act === 'closeTeamRec') return closeTeamRec();
   if (act === 'saveRemark') return saveRemark();
   if (act === 'submitLink') return submitLinkUpdate();

@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld('api', {
   loadStore: () => ipcRenderer.invoke('store:load'),
   saveStore: (data) => ipcRenderer.invoke('store:save', data),
   removeAccount: (game, uid) => ipcRenderer.invoke('store:removeAccount', game, uid),
+  clearAccounts: (game) => ipcRenderer.invoke('store:clearAccounts', game),
   loadSettingsSync: () => ipcRenderer.sendSync('settings:getSync'),
   saveSettings: (patch) => ipcRenderer.invoke('settings:save', patch),
   onConfigUpdated: (cb) => {

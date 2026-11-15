@@ -247,6 +247,25 @@ ipcMain.handle('store:removeAccount', (e, game, uid) => {
   }
 });
 
+// 清空某游戏的全部账号（删除该游戏目录下的账号文件）
+ipcMain.handle('store:clearAccounts', (e, game) => {
+  try {
+    if (!GAMES[game]) return { ok: false, error: '未知游戏' };
+    const dir = path.join(dataDir(), game);
+    let removed = 0;
+    if (fs.existsSync(dir)) {
+      for (const f of fs.readdirSync(dir)) {
+        if (!f.endsWith('.json')) continue;
+        fs.rmSync(path.join(dir, f), { force: true });
+        removed += 1;
+      }
+    }
+    return { ok: true, removed };
+  } catch (err) {
+    return { ok: false, error: err.message || '清空失败' };
+  }
+});
+
 // ---------- 应用设置 ----------
 ipcMain.handle('settings:save', (e, patch) => {
   try {
@@ -891,13 +910,19 @@ async function scanWuwaTree(dir, depth, deadline) {
 }
 
 let lastWuwaLogDir = null;
+// 是否为真实鸣潮安装目录（标准结构带 Client 子目录）
+function isWuwaInstallDir(dir) {
+  try { return fs.statSync(path.join(dir, 'Client')).isDirectory(); } catch { return false; }
+}
+
 async function readWuwaUrl(allowScan = true, notify) {
   const dirs = [];
   const push = (d) => { if (d && !dirs.includes(d) && wuwaLogCandidates(d).length) dirs.push(d); };
   const custom = getGameLogDir('wuwa');
   if (custom) push(custom);
-  // 仅当配置目录不存在（未配置或路径已失效）时才查找；目录存在只是暂无日志则不查找
-  const needSearch = !custom || !fs.existsSync(custom);
+  // 未配置、路径不存在、或路径存在但不是游戏目录时才查找；真实游戏目录只是暂无日志则不查找
+  const customValid = Boolean(custom) && fs.existsSync(custom) && isWuwaInstallDir(custom);
+  const needSearch = !customValid;
   // 自动更新只使用已保存目录，不触发查找；手动更新才查注册表、常见目录与全盘扫描
   if (!dirs.length && allowScan && needSearch) {
     push(await readWuwaRegistry());
@@ -925,7 +950,7 @@ async function readWuwaUrl(allowScan = true, notify) {
     }
   }
   if (!dirs.length) {
-    if (custom && fs.existsSync(custom)) {
+    if (customValid) {
       return { error: '目录中暂未找到日志，请先运行一次游戏并打开「唤取记录」页面' };
     }
     return {
