@@ -892,7 +892,6 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round
 }
 .acct-tab.active .acct-tab-count { background: var(--accent); color: var(--on-accent); font-weight: 700; }
 .acct-panel { max-height: 320px; overflow-y: auto; }
-.acct-panel-head { display: flex; justify-content: flex-end; margin-bottom: 8px; }
 
 /* 页面不滚动，表格内部滚动 */
 .rec-wrap { overflow: auto; max-height: calc(100vh - 360px); }

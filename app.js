@@ -1598,7 +1598,7 @@ function renderAccounts() {
     </div>`;
   }).join('') : '<div class="empty small"><b>该游戏暂无账号</b><p>前往对应游戏页面点击「导入」载入数据文件。</p></div>';
 
-  wrap.innerHTML = `<div class="acct-tabs">${tabs}</div>${list.length ? `<div class="acct-panel-head"><button class="btn-sm danger" data-clear="${acctTab}">清空本游戏账号</button></div>` : ''}<div class="acct-panel">${rows}</div>`;
+  wrap.innerHTML = `<div class="acct-tabs">${tabs}</div><div class="acct-panel">${rows}</div>`;
 }
 
 // ---------- 账号备注弹窗编辑 ----------
@@ -1647,43 +1647,6 @@ $('#remarkInput').addEventListener('keydown', (e) => {
   else if (e.key === 'Escape') { e.preventDefault(); closeRemarkEdit(); }
 });
 
-// ---------- 清空账号确认弹窗 ----------
-let clearAcctGame = '';
-function openClearAccounts(game) {
-  const n = accountsOf(game).length;
-  if (!n) return;
-  clearAcctGame = game;
-  $('#clearAccountsTitle').textContent = `清空「${GAMES[game].name}」账号`;
-  $('#clearAccountsSub').textContent = `将删除该游戏在本地的 ${n} 个账号及全部抽卡记录，此操作不可撤销。建议先做一次备份导出。`;
-  $('#clearAccountsMask').hidden = false;
-}
-function closeClearAccounts() {
-  $('#clearAccountsMask').hidden = true;
-  clearAcctGame = '';
-}
-async function confirmClearAccounts() {
-  const game = clearAcctGame;
-  if (!game) return;
-  if (fetching[game]) {
-    toast(`「${GAMES[game].name}」正在更新，请等更新结束后再清空`);
-    return;
-  }
-  const res = await api.clearAccounts(game);
-  if (!res?.ok) {
-    toast(res?.error || '清空失败，请检查数据目录权限');
-    return;
-  }
-  store.accounts[game] = [];
-  store.active[game] = null;
-  await save();
-  renderGame(game);
-  renderOverview();
-  renderAccounts();
-  if (game === 'hsr') renderHsrTeam();
-  closeClearAccounts();
-  toast(`已清空「${GAMES[game].name}」账号，共 ${res.removed} 个`);
-}
-
 $('#accountList').addEventListener('click', async (e) => {
   const tab = e.target.closest('[data-tab]');
   if (tab) { acctTab = tab.dataset.tab; renderAccounts(); return; }
@@ -1693,20 +1656,29 @@ $('#accountList').addEventListener('click', async (e) => {
     openRemarkEdit(game, uid);
     return;
   }
-  const clr = e.target.closest('[data-clear]');
-  if (clr) { openClearAccounts(clr.dataset.clear); return; }
   const sw = e.target.closest('[data-switch]');
   const del = e.target.closest('[data-del]');
   if (sw) {
     const [game, uid] = sw.dataset.switch.split(':');
+    // 更新进行中切换会被本次更新结束时的合并结果覆盖，等更新结束再切
+    if (fetching[game]) {
+      toast(`「${GAMES[game].name}」正在更新，请等更新结束后再切换账号`);
+      return;
+    }
     store.active[game] = uid;
     await save();
     renderGame(game);
     renderOverview();
+    renderAccounts();
     if (game === 'hsr') renderHsrTeam();
     toast(`已切换到账号 ${uid}`);
   } else if (del) {
     const [game, uid] = del.dataset.del.split(':');
+    // 更新进行中删除会被本次更新的合并结果重新写回，等更新结束再删
+    if (fetching[game]) {
+      toast(`「${GAMES[game].name}」正在更新，请等更新结束后再删除`);
+      return;
+    }
     // 先删文件，失败则保留账号，避免界面显示已删除但重启后复活
     const ok = await api.removeAccount(game, uid);
     if (!ok) {
@@ -1720,6 +1692,7 @@ $('#accountList').addEventListener('click', async (e) => {
     await save();
     renderGame(game);
     renderOverview();
+    renderAccounts();
     if (game === 'hsr') renderHsrTeam();
     toast(`已删除账号 ${uid}`);
   }
@@ -1821,6 +1794,7 @@ async function importData(game) {
     await save();
     renderGame(game);
     renderOverview();
+    renderAccounts();
     if (game === 'hsr') renderHsrTeam();
     toast(`导入完成：${res.uids.length} 个账号，新增 ${added} 条记录`);
     return;
@@ -1841,6 +1815,7 @@ async function importData(game) {
   await save();
   renderGame(game);
   renderOverview();
+  renderAccounts();
   if (game === 'hsr') renderHsrTeam();
   toast(`导入完成：${res.uids.length} 个账号，新增 ${added} 条记录`);
 }
@@ -1957,6 +1932,7 @@ async function fetchOnline(game, link, onProgress, onStage, priority = 'auto') {
     await save();
     renderGame(game);
     renderOverview();
+    renderAccounts();
     if (game === 'hsr') renderHsrTeam();
     await onStage?.('done');
     toast(added ? `更新完成：新增 ${added} 条记录` : '数据已是最新');
@@ -2272,8 +2248,6 @@ document.addEventListener('click', (e) => {
   if (act === 'closeLink') return closeLinkUpdate();
   if (act === 'closeAcctSelect') return closeAcctSelect();
   if (act === 'closeRemark') return closeRemarkEdit();
-  if (act === 'closeClearAccounts') return closeClearAccounts();
-  if (act === 'confirmClearAccounts') return confirmClearAccounts();
   if (act === 'closeTeamRec') return closeTeamRec();
   if (act === 'saveRemark') return saveRemark();
   if (act === 'submitLink') return submitLinkUpdate();

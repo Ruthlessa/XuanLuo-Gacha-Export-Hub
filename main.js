@@ -214,6 +214,13 @@ ipcMain.handle('store:load', () => {
 });
 
 const SAFE_UID = /^[0-9A-Za-z_-]+$/; // 防止 uid 被构造为路径穿越
+// 「未知UID」是导入缺少 uid 时的固定占位名，允许正常落盘，避免重启后丢失
+const UNKNOWN_UID = '未知UID';
+const isSafeUid = (uid) => {
+  const s = typeof uid === 'number' ? String(uid) : uid;
+  if (typeof s !== 'string' || !s) return false;
+  return s === UNKNOWN_UID || SAFE_UID.test(s);
+};
 
 ipcMain.handle('store:save', (e, data) => {
   try {
@@ -226,7 +233,7 @@ ipcMain.handle('store:save', (e, data) => {
       fs.mkdirSync(dir, { recursive: true });
       // 只写入账号文件，不在保存时删除磁盘数据
       for (const acc of list) {
-        if (!acc?.uid || !SAFE_UID.test(String(acc.uid))) continue;
+        if (!acc?.uid || !isSafeUid(acc.uid)) continue;
         fs.writeFileSync(path.join(dir, `${acc.uid}.json`), JSON.stringify(acc));
       }
     }
@@ -239,30 +246,11 @@ ipcMain.handle('store:save', (e, data) => {
 // 删除账号：只有显式删除才移除磁盘文件
 ipcMain.handle('store:removeAccount', (e, game, uid) => {
   try {
-    if (!GAMES[game] || !SAFE_UID.test(String(uid))) return false;
+    if (!GAMES[game] || !isSafeUid(uid)) return false;
     fs.rmSync(path.join(dataDir(), game, `${uid}.json`), { force: true });
     return true;
   } catch {
     return false;
-  }
-});
-
-// 清空某游戏的全部账号（删除该游戏目录下的账号文件）
-ipcMain.handle('store:clearAccounts', (e, game) => {
-  try {
-    if (!GAMES[game]) return { ok: false, error: '未知游戏' };
-    const dir = path.join(dataDir(), game);
-    let removed = 0;
-    if (fs.existsSync(dir)) {
-      for (const f of fs.readdirSync(dir)) {
-        if (!f.endsWith('.json')) continue;
-        fs.rmSync(path.join(dir, f), { force: true });
-        removed += 1;
-      }
-    }
-    return { ok: true, removed };
-  } catch (err) {
-    return { ok: false, error: err.message || '清空失败' };
   }
 });
 
@@ -365,7 +353,11 @@ ipcMain.handle('uigf:import', async (e, game) => {
   return {
     ok: true,
     file,
-    uids: sections.map((s) => ({ uid: String(s.uid || ''), list: Array.isArray(s.list) ? s.list : [] })),
+    // uid 会用于文件名与导出文件名：缺失或异常时统一归入占位账号
+    uids: sections.map((s) => ({
+      uid: isSafeUid(s.uid) ? String(s.uid) : UNKNOWN_UID,
+      list: Array.isArray(s.list) ? s.list : [],
+    })),
   };
 });
 
@@ -375,30 +367,47 @@ const GENSHIN_TYPES = GAMES.genshin.fetchTypes;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // 单次请求（15s 超时），不重试；重试由 fetchPage 统一控制
-async function fetchJson(url) {
+// signal：同一游戏的新更新请求可立即中断旧请求，避免界面超时后旧请求继续空跑
+async function fetchJson(url, signal) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 15000);
+  const onAbort = () => ctrl.abort();
+  if (signal) {
+    if (signal.aborted) ctrl.abort();
+    else signal.addEventListener('abort', onAbort, { once: true });
+  }
   try {
     const res = await fetch(url, { signal: ctrl.signal });
     return await res.json();
   } finally {
     clearTimeout(timer);
+    if (signal) signal.removeEventListener('abort', onAbort);
   }
 }
 
+// 同一游戏只保留最新一次在线更新：新请求开始时中断旧请求
+const onlineFetchCtrl = {};
+function beginOnlineFetch(game) {
+  try { onlineFetchCtrl[game]?.abort(); } catch { /* 旧请求已结束 */ }
+  const ctrl = new AbortController();
+  onlineFetchCtrl[game] = ctrl;
+  return ctrl;
+}
+
 // 参考 genshin-wish-export：任何失败（限流/网络）统一睡 5s 重试同页，最多 5 次
-async function fetchPage(api, retryCount = 5) {
+async function fetchPage(api, retryCount = 5, signal) {
   try {
-    const json = await fetchJson(api);
+    const json = await fetchJson(api, signal);
     if (json.retcode !== 0) {
       if (json.message === 'authkey timeout') return { authTimeout: true };
       throw new Error(json.message || 'unknown error'); // 限流等统一走重试
     }
     return json;
   } catch (err) {
+    if (signal?.aborted) throw err; // 被新请求中断时不再重试
     if (retryCount > 0) {
       await sleep(5000);
-      return fetchPage(api, retryCount - 1);
+      return fetchPage(api, retryCount - 1, signal);
     }
     throw err;
   }
@@ -465,6 +474,7 @@ ipcMain.handle('genshin:openCacheDir', () => {
 
 // knownLatest: { [uid]: { [gachaType]: 本地最新记录id } }，命中即停止翻页（增量更新）
 ipcMain.handle('genshin:fetch', async (e, knownLatest, link) => {
+  const ctrl = beginOnlineFetch('genshin');
   const found = link ? { url: link } : readGenshinUrl();
   if (found.error) return { error: found.error };
 
@@ -487,9 +497,9 @@ ipcMain.handle('genshin:fetch', async (e, knownLatest, link) => {
       const api = `${apiDomain}/gacha_info/api/getGachaLog?${qs}&gacha_type=${key}&page=${page}&size=20${endId ? `&end_id=${endId}` : ''}`;
       let json;
       try {
-        json = await fetchPage(api);
+        json = await fetchPage(api, 5, ctrl.signal);
       } catch (err) {
-        return { error: `获取失败：${err.message}` };
+        return { error: ctrl.signal.aborted ? '已被新的更新请求替代' : `获取失败：${err.message}` };
       }
       if (json.authTimeout) return { error: 'authkey 已过期，请重新在游戏内打开「历史记录」后再试' };
 
@@ -577,6 +587,7 @@ ipcMain.handle('hsr:openCacheDir', () => {
 const HSR_TYPES = GAMES.hsr.fetchTypes;
 
 ipcMain.handle('hsr:fetch', async (e, knownLatest, link) => {
+  const ctrl = beginOnlineFetch('hsr');
   const found = link ? { url: link } : readHsrUrl();
   if (found.error) return { error: found.error };
 
@@ -592,9 +603,9 @@ ipcMain.handle('hsr:fetch', async (e, knownLatest, link) => {
   // 校验链接有效性
   let test;
   try {
-    test = await fetchPage(`${apiDomain}/common/hkrpg_gacha_record/api/getGachaLog?${qs}&gacha_type=1&page=1&size=5`);
+    test = await fetchPage(`${apiDomain}/common/hkrpg_gacha_record/api/getGachaLog?${qs}&gacha_type=1&page=1&size=5`, 5, ctrl.signal);
   } catch (err) {
-    return { error: `链接校验失败：${err.message}` };
+    return { error: ctrl.signal.aborted ? '已被新的更新请求替代' : `链接校验失败：${err.message}` };
   }
   if (test.authTimeout) return { error: 'authkey 已过期，请重新在游戏内打开「跃迁记录」后再试' };
   if (test.error) return { error: test.error };
@@ -610,9 +621,9 @@ ipcMain.handle('hsr:fetch', async (e, knownLatest, link) => {
       const api = `${apiDomain}/common/hkrpg_gacha_record/api/${apiPath}?${qs}&gacha_type=${key}&page=${page}&size=20${endId ? `&end_id=${endId}` : ''}`;
       let json;
       try {
-        json = await fetchPage(api);
+        json = await fetchPage(api, 5, ctrl.signal);
       } catch (err) {
-        return { error: `获取失败：${err.message}` };
+        return { error: ctrl.signal.aborted ? '已被新的更新请求替代' : `获取失败：${err.message}` };
       }
       if (json.authTimeout) return { error: 'authkey 已过期，请重新在游戏内打开「跃迁记录」后再试' };
 
@@ -710,9 +721,9 @@ ipcMain.handle('zzz:openCacheDir', () => {
 // 频段类型（上游 gachaType.json）：2 独家 / 102 独家重映 / 3 音擎 / 103 音擎回响 / 1 常驻 / 5 邦布
 const ZZZ_TYPES = GAMES.zzz.fetchTypes;
 
-async function fetchPageZzz(api, retryCount = 5) {
+async function fetchPageZzz(api, retryCount = 5, signal) {
   try {
-    const json = await fetchJson(api);
+    const json = await fetchJson(api, signal);
     if (json.retcode !== 0) {
       if (json.message === 'authkey timeout') return { authTimeout: true };
       if (/param|参数|invalid|gacha_type/i.test(json.message || '')) return { invalid: true };
@@ -720,15 +731,17 @@ async function fetchPageZzz(api, retryCount = 5) {
     }
     return json;
   } catch (err) {
+    if (signal?.aborted) throw err; // 被新请求中断时不再重试
     if (retryCount > 0) {
       await sleep(5000);
-      return fetchPageZzz(api, retryCount - 1);
+      return fetchPageZzz(api, retryCount - 1, signal);
     }
     throw err;
   }
 }
 
 ipcMain.handle('zzz:fetch', async (e, knownLatest, link) => {
+  const ctrl = beginOnlineFetch('zzz');
   const found = link ? { url: link } : readZzzUrl();
   if (found.error) return { error: found.error };
 
@@ -751,9 +764,9 @@ ipcMain.handle('zzz:fetch', async (e, knownLatest, link) => {
       const api = `${apiDomain}/common/gacha_record/api/getGachaLog?${qs}&real_gacha_type=${key}&page=${page}&size=20${endId ? `&end_id=${endId}` : ''}`;
       let json;
       try {
-        json = await fetchPageZzz(api);
+        json = await fetchPageZzz(api, 5, ctrl.signal);
       } catch (err) {
-        return { error: `获取失败：${err.message}` };
+        return { error: ctrl.signal.aborted ? '已被新的更新请求替代' : `获取失败：${err.message}` };
       }
       if (json.authTimeout) return { error: 'authkey 已过期，请重新在游戏内打开「调频记录」后再试' };
       if (json.invalid) break; // 该频段类型不存在，跳过
@@ -963,20 +976,33 @@ async function readWuwaUrl(allowScan = true, notify) {
 }
 
 // POST 查询单个卡池（code 0 为成功）
-async function fetchJsonPost(url, body) {
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(25000),
-  });
-  return res.json();
+async function fetchJsonPost(url, body, signal) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 25000);
+  const onAbort = () => ctrl.abort();
+  if (signal) {
+    if (signal.aborted) ctrl.abort();
+    else signal.addEventListener('abort', onAbort, { once: true });
+  }
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: ctrl.signal,
+    });
+    return await res.json();
+  } finally {
+    clearTimeout(timer);
+    if (signal) signal.removeEventListener('abort', onAbort);
+  }
 }
 
 // 卡池类型（上游 POOL_NAMES）：1/2 活动 3/4 常驻 5-7 新手系 8/9 新旅 10/11 联动 12/13 忆旅
 const WUWA_TYPES = GAMES.wuwa.fetchTypes;
 
 ipcMain.handle('wuwa:fetch', async (ev, link, allowScan) => {
+  const ctrl = beginOnlineFetch('wuwa');
   const send = (p) => { if (!ev.sender.isDestroyed()) ev.sender.send('wuwa:progress', p); };
   try {
     const found = link ? { url: link } : await readWuwaUrl(allowScan !== false, send);
@@ -1000,16 +1026,20 @@ ipcMain.handle('wuwa:fetch', async (ev, link, allowScan) => {
     let anySuccess = false;
     let lastErr = '';
     for (const [type, label] of WUWA_TYPES) {
+      if (ctrl.signal.aborted) return { error: '已被新的更新请求替代' };
       send({ label, page: 1, total: list.length });
       try {
         const json = await fetchJsonPost(endpoint, {
           playerId, recordId, cardPoolId, cardPoolType: type, serverId, languageCode,
-        });
+        }, ctrl.signal);
         if (json.code !== 0) throw new Error(json.message || '请求失败');
         // 响应记录里的 cardPoolType 可能是中文名（如"角色精准调谐"），以请求的类型码为准
         (json.data || []).forEach((it) => list.push({ ...it, cardPoolType: type }));
         anySuccess = true;
-      } catch (e) { lastErr = e.message; } // 空池或已下架池会失败，跳过
+      } catch (e) {
+        if (ctrl.signal.aborted) return { error: '已被新的更新请求替代' };
+        lastErr = e.message;
+      } // 空池或已下架池会失败，跳过
       await sleep(200);
     }
     if (!anySuccess) return { error: `未能获取到数据，链接可能已过期（约 24 小时有效），请重新获取${lastErr ? `（${lastErr}）` : ''}` };
@@ -1382,8 +1412,10 @@ ipcMain.handle('data:batchImport', async () => {
     const arr = [];
     for (const a of list) {
       if (!a || !a.uid || !Array.isArray(a.records)) continue;
+      const uid = String(a.uid);
+      if (!isSafeUid(uid)) continue; // uid 会被用作文件名，异常 uid 直接跳过
       arr.push({
-        uid: String(a.uid),
+        uid,
         remark: typeof a.remark === 'string' ? a.remark : '',
         updatedAt: Number(a.updatedAt) || 0,
         records: a.records,
