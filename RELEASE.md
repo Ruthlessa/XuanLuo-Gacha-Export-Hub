@@ -28,11 +28,10 @@ https://github.com/XLoDream/XuanLuo-Gacha-Export-Hub/actions
 
 | 文件 | 位置 |
 | --- | --- |
-| `package.json` | `"version"`（决定安装包文件名与更新比对） |
-| `index.html` | 关于卡片标题右侧的 `.version-pill` |
-| `index.html` | 关于卡片名称后的 `.about-version` |
+| `package.json` / `package-lock.json` | `"version"`（决定安装包文件名与更新比对） |
+| `RELEASE_NOTES.md` | 顶部公告标题的版本号 |
 
-三处必须一致，否则界面显示的版本会和实际安装包不符。
+关于页的版本号在启动时自动读取安装包版本（`app.getVersion()`），无需手工同步。
 
 ## 三、更新机制
 

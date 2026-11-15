@@ -19,6 +19,7 @@ contextBridge.exposeInMainWorld('api', {
   loadSettingsSync: () => ipcRenderer.sendSync('settings:getSync'),
   saveSettings: (patch) => ipcRenderer.invoke('settings:save', patch),
   dataDir: () => ipcRenderer.invoke('app:dataDir'),
+  appVersion: () => ipcRenderer.invoke('app:version'),
   checkUpdate: () => ipcRenderer.invoke('app:checkUpdate'),
   startUpdate: (idx) => ipcRenderer.invoke('update:start', idx),
   openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),

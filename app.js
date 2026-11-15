@@ -2367,6 +2367,11 @@ const ICONS = new Proxy({}, {
     $('#aboutVersions').textContent =
       `Electron ${versions.electron} · Chrome ${versions.chrome} · Node ${versions.node}`;
   }
+  // 关于页版本号跟随安装包实际版本，更新后无需手工同步
+  api.appVersion?.().then((v) => {
+    const el = $('.about-version');
+    if (el && v) el.textContent = `v${v}`;
+  }).catch(() => {});
   moveIndicator();
 })();
 

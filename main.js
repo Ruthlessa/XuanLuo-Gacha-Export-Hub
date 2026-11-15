@@ -101,10 +101,25 @@ function detectZzzLogDir() {
   vendors.forEach((v) => names.forEach((n) => candidates.push(path.join(home, 'AppData', 'LocalLow', v, n))));
   return candidates.find((d) => fs.existsSync(path.join(d, 'Player.log')) || fs.existsSync(path.join(d, 'output_log.txt'))) || '';
 }
-function detectWuwaLogDir() {
+// 客户端目录名固定为 Wuthering Waves Game，父目录不固定（mc、Wuthering Waves、Program Files…）
+const WUWA_CLIENT_DIR = 'wuthering waves game';
+// 常见布局优先直接命中，未命中再按叶子目录名扫描
+function wuwaInstallCandidates() {
   const drives = Array.from({ length: 24 }, (_, i) => String.fromCharCode(67 + i)); // C ~ Z
-  const candidates = drives.map((c) => path.join(`${c}:\\`, 'Wuthering Waves', 'Wuthering Waves Game'));
-  return candidates.find((d) => fs.existsSync(path.join(d, 'Client', 'Saved', 'Logs'))) || '';
+  const bases = [];
+  drives.forEach((c) => {
+    bases.push(`${c}:\\Wuthering Waves`);
+    bases.push(`${c}:\\Program Files\\Wuthering Waves`);
+    bases.push(`${c}:\\Program Files (x86)\\Wuthering Waves`);
+    bases.push(`${c}:\\mc`);
+  });
+  return bases.map((b) => path.join(b, 'Wuthering Waves Game'));
+}
+function isWuwaGameDir(dir) {
+  return fs.existsSync(path.join(dir, 'Client', 'Saved', 'Logs'));
+}
+function detectWuwaLogDir() {
+  return wuwaInstallCandidates().find(isWuwaGameDir) || scanWuwaGameDir();
 }
 function detectLogDir(game) {
   switch (game) {
@@ -224,6 +239,7 @@ ipcMain.on('settings:getSync', (e) => {
 });
 
 ipcMain.handle('app:dataDir', () => dataDir());
+ipcMain.handle('app:version', () => app.getVersion());
 ipcMain.handle('shell:openDataDir', () => shell.openPath(dataDir()));
 ipcMain.handle('dialog:pickDir', async () => {
   const res = await dialog.showOpenDialog({
@@ -776,36 +792,51 @@ function readWuwaRegistry() {
   });
 }
 
-// 全盘浅层扫描（整体最多 12 秒、单盘最多深入 40 个分支）
+// 按固定叶子目录名搜索，父目录任意；Program Files 作为独立起点，整体最多 12 秒
 const WUWA_SKIP_DIRS = new Set(['windows', '$recycle.bin', 'system volume information', 'programdata', 'program files', 'program files (x86)', 'node_modules', 'appdata']);
-function scanWuwaDir(dir, depth, deadline) {
-  if (Date.now() > deadline) return '';
-  let entries;
-  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return ''; }
-  const dirs = entries.filter((e) => e.isDirectory() && !WUWA_SKIP_DIRS.has(e.name.toLowerCase()));
-  for (const d of dirs) {
-    if (/wuthering/i.test(d.name)) {
-      const full = path.join(dir, d.name);
-      if (fs.existsSync(path.join(full, 'Client', 'Saved', 'Logs'))) return full;
-    }
-  }
-  if (depth <= 1) return '';
-  for (let i = 0; i < dirs.length && i < 40; i++) {
-    const r = scanWuwaDir(path.join(dir, dirs[i].name), depth - 1, deadline);
-    if (r) return r;
-  }
-  return '';
-}
-function scanWuwaDrives() {
-  const deadline = Date.now() + 12000;
+function wuwaScanRoots() {
+  const roots = [];
   for (let c = 67; c <= 90; c++) {
     const root = String.fromCharCode(c) + ':\\';
     if (!fs.existsSync(root)) continue;
-    const found = scanWuwaDir(root, 2, deadline);
-    if (found) return found;
-    if (Date.now() > deadline) break;
+    roots.push(root, path.join(root, 'Program Files'), path.join(root, 'Program Files (x86)'));
   }
-  return '';
+  return roots;
+}
+function scanWuwaGameDir() {
+  const deadline = Date.now() + 12000;
+  const seen = new Set();
+  let result = '';
+  const visit = (dir, depth) => {
+    if (result || Date.now() > deadline) return;
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    const next = [];
+    for (const e of entries) {
+      if (!e.isDirectory()) continue;
+      const name = e.name.toLowerCase();
+      const full = path.join(dir, e.name);
+      if (name === WUWA_CLIENT_DIR) {
+        if (!seen.has(full.toLowerCase()) && isWuwaGameDir(full)) {
+          seen.add(full.toLowerCase());
+          result = full;
+          return;
+        }
+        continue;
+      }
+      if (WUWA_SKIP_DIRS.has(name)) continue;
+      // 疑似启动器/游戏目录优先下探，减少无关分支
+      next.push({ full, hint: /wuthering|^mc$|games?|launcher|client/i.test(e.name) ? 1 : 0 });
+    }
+    if (depth >= 3) return;
+    next.sort((a, b) => b.hint - a.hint);
+    for (const d of next.slice(0, 30)) visit(d.full, depth + 1);
+  };
+  for (const root of wuwaScanRoots()) {
+    visit(root, 0);
+    if (result || Date.now() > deadline) break;
+  }
+  return result;
 }
 
 let lastWuwaLogDir = null;
@@ -813,14 +844,14 @@ async function readWuwaUrl() {
   const dirs = [];
   const push = (d) => { if (d && !dirs.includes(d) && wuwaLogCandidates(d).length) dirs.push(d); };
   const custom = getGameLogDir('wuwa');
-  if (custom) {
-    push(custom);
-  } else {
+  if (custom) push(custom);
+  if (!dirs.length) {
     push(await readWuwaRegistry());
-    Array.from({ length: 24 }, (_, i) => String.fromCharCode(67 + i)) // C ~ Z
-      .forEach((c) => push(path.join(`${c}:\\`, 'Wuthering Waves', 'Wuthering Waves Game')));
-    if (!dirs.length) push(scanWuwaDrives());
+    wuwaInstallCandidates().forEach(push);
   }
+  // 配置目录失效或未找到：自行查找，命中后写回 app.config.json
+  if (!dirs.length) push(scanWuwaGameDir());
+  if (dirs.length && (!custom || !wuwaLogCandidates(custom).length)) saveGameLogDir('wuwa', dirs[0]);
 
   for (const dir of dirs) {
     for (const logFile of wuwaLogCandidates(dir)) {

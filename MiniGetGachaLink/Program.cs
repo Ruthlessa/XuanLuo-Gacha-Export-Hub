@@ -236,8 +236,12 @@ namespace MiniGetGachaLink
 
             for (int c = 67; c <= 90; c++)
             {
-                string dir = Path.Combine(((char)c) + ":\\", "Wuthering Waves", "Wuthering Waves Game");
-                if (HasWuwaLogs(dir)) AddUnique(dirs, dir);
+                string drive = ((char)c) + ":\\";
+                foreach (string sub in new[] { "Wuthering Waves", Path.Combine("Program Files", "Wuthering Waves"), Path.Combine("Program Files (x86)", "Wuthering Waves"), "mc" })
+                {
+                    string dir = Path.Combine(drive, sub, "Wuthering Waves Game");
+                    if (HasWuwaLogs(dir)) AddUnique(dirs, dir);
+                }
             }
             if (dirs.Count == 0)
             {
@@ -374,44 +378,63 @@ namespace MiniGetGachaLink
             return !string.IsNullOrEmpty(value) && value.IndexOf("Wuthering", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
+        private const string WuwaClientDir = "Wuthering Waves Game";
+
+        // 客户端目录名固定，父目录可能是 mc / Wuthering Waves / Program Files 等
         private static string ScanWuwaDrives()
         {
             DateTime deadline = DateTime.UtcNow.AddSeconds(12);
+            HashSet<string> seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             for (int c = 67; c <= 90; c++)
             {
                 string root = ((char)c) + ":\\";
                 if (!Directory.Exists(root)) continue;
-                string found = ScanWuwaDir(root, 2, deadline);
-                if (!string.IsNullOrEmpty(found)) return found;
+                string[] starts = new string[] { root, Path.Combine(root, "Program Files"), Path.Combine(root, "Program Files (x86)") };
+                foreach (string start in starts)
+                {
+                    string found = ScanWuwaDir(start, 3, deadline, seen);
+                    if (!string.IsNullOrEmpty(found)) return found;
+                    if (DateTime.UtcNow > deadline) break;
+                }
                 if (DateTime.UtcNow > deadline) break;
             }
             return null;
         }
 
-        private static string ScanWuwaDir(string dir, int depth, DateTime deadline)
+        private static string ScanWuwaDir(string dir, int depth, DateTime deadline, HashSet<string> seen)
         {
             if (DateTime.UtcNow > deadline) return null;
             List<DirectoryInfo> dirs = new List<DirectoryInfo>();
             try
             {
                 foreach (DirectoryInfo entry in new DirectoryInfo(dir).GetDirectories())
+                {
+                    if (string.Equals(entry.Name, WuwaClientDir, StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (seen.Add(entry.FullName) && HasWuwaLogs(entry.FullName)) return entry.FullName;
+                        continue;
+                    }
                     if (!WuwaSkipDirs.Contains(entry.Name)) dirs.Add(entry);
+                }
             }
             catch { return null; }
 
-            foreach (DirectoryInfo entry in dirs)
-            {
-                if (ContainsWuthering(entry.Name) &&
-                    Directory.Exists(Path.Combine(entry.FullName, "Client", "Saved", "Logs")))
-                    return entry.FullName;
-            }
             if (depth <= 1) return null;
-            for (int i = 0; i < dirs.Count && i < 40; i++)
+            // 疑似启动器/游戏目录优先下探，减少无关分支
+            dirs.Sort(delegate(DirectoryInfo a, DirectoryInfo b) { return WuwaDirScore(b.Name).CompareTo(WuwaDirScore(a.Name)); });
+            for (int i = 0; i < dirs.Count && i < 30; i++)
             {
-                string found = ScanWuwaDir(dirs[i].FullName, depth - 1, deadline);
+                string found = ScanWuwaDir(dirs[i].FullName, depth - 1, deadline, seen);
                 if (!string.IsNullOrEmpty(found)) return found;
             }
             return null;
+        }
+
+        private static int WuwaDirScore(string name)
+        {
+            return ContainsWuthering(name) ||
+                string.Equals(name, "mc", StringComparison.OrdinalIgnoreCase) ||
+                name.IndexOf("Game", StringComparison.OrdinalIgnoreCase) >= 0 ? 1 : 0;
         }
 
         private static Dictionary<string, string> LoadCustomDirs()
