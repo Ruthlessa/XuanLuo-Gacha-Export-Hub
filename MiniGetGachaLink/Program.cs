@@ -1,16 +1,19 @@
 using System;
 using System.Collections.Generic;
+using System.Drawing;
 using System.IO;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading.Tasks;
 using System.Web.Script.Serialization;
+using System.Windows.Forms;
 using Microsoft.Win32;
 
 namespace MiniGetGachaLink
 {
     internal static class Program
     {
-        private delegate string LinkReader();
+        private delegate string LinkReader(Action<string> log, out bool pathFound);
 
         private static readonly JavaScriptSerializer Json = new JavaScriptSerializer();
         private static readonly Dictionary<string, string> CustomDirs = LoadCustomDirs();
@@ -20,47 +23,58 @@ namespace MiniGetGachaLink
             "program files", "program files (x86)", "node_modules", "appdata"
         };
 
-        private static int Main()
+        [STAThread]
+        private static void Main()
         {
-            try { Console.OutputEncoding = Encoding.UTF8; } catch { }
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
+            Application.Run(new MainForm());
+        }
 
+        internal static int Generate(Action<string> log)
+        {
             Dictionary<string, string> links = new Dictionary<string, string>();
-            TryRead("原神", "genshin", ReadGenshinUrl, links);
-            TryRead("崩坏：星穹铁道", "hsr", ReadHsrUrl, links);
-            TryRead("绝区零", "zzz", ReadZzzUrl, links);
-            TryRead("鸣潮", "wuwa", ReadWuwaUrl, links);
+            TryRead("原神", "genshin", ReadGenshinUrl, links, log);
+            TryRead("崩坏：星穹铁道", "hsr", ReadHsrUrl, links, log);
+            TryRead("绝区零", "zzz", ReadZzzUrl, links, log);
+            TryRead("鸣潮", "wuwa", ReadWuwaUrl, links, log);
 
             string output = Path.Combine(Directory.GetCurrentDirectory(), "gacha-links.json");
             try
             {
                 File.WriteAllText(output, ToJson(links), new UTF8Encoding(false));
-                Console.WriteLine("已生成：" + output);
-                Console.WriteLine("共获取 " + links.Count + " 个游戏的抽卡链接。");
-                return 0;
+                log("已生成：" + output);
+                log("共获取 " + links.Count + " 个游戏的抽卡链接。");
+                return links.Count;
             }
             catch (Exception ex)
             {
-                Console.WriteLine("写入 JSON 失败：" + ex.Message);
-                return 1;
+                log("写入 JSON 失败：" + ex.Message);
+                return -1;
             }
         }
 
-        private static void TryRead(string displayName, string game, LinkReader reader, Dictionary<string, string> links)
+        private static void TryRead(string displayName, string game, LinkReader reader,
+            Dictionary<string, string> links, Action<string> log)
         {
+            log("正在读取 " + displayName + "...");
             try
             {
-                string url = reader();
+                bool pathFound;
+                string url = reader(log, out pathFound);
                 if (string.IsNullOrEmpty(url))
                 {
-                    Console.WriteLine("[跳过] " + displayName + "：未找到抽卡链接");
+                    log(pathFound
+                        ? "[无链接] " + displayName + "：已识别到路径，但未找到抽卡链接"
+                        : "[未识别] " + displayName + "：未识别到游戏路径");
                     return;
                 }
                 links[game] = FixAuthkey(url);
-                Console.WriteLine("[成功] " + displayName);
+                log("[成功] " + displayName + "：已获取抽卡链接");
             }
             catch (Exception ex)
             {
-                Console.WriteLine("[跳过] " + displayName + "：" + ex.Message);
+                log("[跳过] " + displayName + "：读取失败，" + ex.Message);
             }
         }
 
@@ -93,8 +107,9 @@ namespace MiniGetGachaLink
             });
         }
 
-        private static string ReadGenshinUrl()
+        private static string ReadGenshinUrl(Action<string> log, out bool pathFound)
         {
+            pathFound = false;
             List<string> dirs = new List<string>();
             AddCustomDir(dirs, "genshin");
             AddUnique(dirs, HomePath("AppData", "LocalLow", "miHoYo", "原神"));
@@ -104,11 +119,22 @@ namespace MiniGetGachaLink
             {
                 string logFile = Path.Combine(dir, "output_log.txt");
                 if (!File.Exists(logFile)) continue;
+                pathFound = true;
+                log("[路径] 原神日志：" + logFile);
                 Match match = Regex.Match(ReadAllTextShared(logFile), @"\w:/.+(GenshinImpact_Data|YuanShen_Data)");
-                if (!match.Success) continue;
-
-                foreach (string file in CacheCandidates(Path.Combine(match.Value, "webCaches")))
+                if (!match.Success)
                 {
+                    log("[提示] 原神：日志中未识别到游戏数据目录");
+                    continue;
+                }
+
+                string cacheDir = Path.Combine(match.Value, "webCaches");
+                log("[路径] 原神缓存目录：" + cacheDir);
+                List<string> files = CacheCandidates(cacheDir);
+                if (files.Count == 0) log("[提示] 原神：缓存目录中未找到 data_2 文件");
+                foreach (string file in files)
+                {
+                    log("[路径] 原神缓存文件：" + file);
                     MatchCollection urls = Regex.Matches(ReadAllTextShared(file),
                         @"https.+?auth_appid=webview_gacha.+?authkey=.+?game_biz=hk4e_\w+");
                     if (urls.Count > 0) return urls[urls.Count - 1].Value;
@@ -117,8 +143,9 @@ namespace MiniGetGachaLink
             return null;
         }
 
-        private static string ReadHsrUrl()
+        private static string ReadHsrUrl(Action<string> log, out bool pathFound)
         {
+            pathFound = false;
             List<string> dirs = new List<string>();
             AddCustomDir(dirs, "hsr");
             AddUnique(dirs, HomePath("AppData", "LocalLow", "miHoYo", "崩坏：星穹铁道"));
@@ -128,11 +155,22 @@ namespace MiniGetGachaLink
             {
                 string logFile = Path.Combine(dir, "Player.log");
                 if (!File.Exists(logFile)) continue;
+                pathFound = true;
+                log("[路径] 崩铁日志：" + logFile);
                 Match match = Regex.Match(ReadAllTextShared(logFile), @"\w:/.*?/StarRail_Data/", RegexOptions.IgnoreCase);
-                if (!match.Success) continue;
-
-                foreach (string file in CacheCandidates(Path.Combine(match.Value, "webCaches")))
+                if (!match.Success)
                 {
+                    log("[提示] 崩铁：日志中未识别到游戏数据目录");
+                    continue;
+                }
+
+                string cacheDir = Path.Combine(match.Value, "webCaches");
+                log("[路径] 崩铁缓存目录：" + cacheDir);
+                List<string> files = CacheCandidates(cacheDir);
+                if (files.Count == 0) log("[提示] 崩铁：缓存目录中未找到 data_2 文件");
+                foreach (string file in files)
+                {
+                    log("[路径] 崩铁缓存文件：" + file);
                     MatchCollection urls = Regex.Matches(ReadAllTextShared(file),
                         @"https[^?]+?\?[^?]+?&auth_appid=webview_gacha&.+?authkey=.+?&game_biz=hkrpg_\w+");
                     if (urls.Count > 0) return urls[urls.Count - 1].Value;
@@ -141,8 +179,9 @@ namespace MiniGetGachaLink
             return null;
         }
 
-        private static string ReadZzzUrl()
+        private static string ReadZzzUrl(Action<string> log, out bool pathFound)
         {
+            pathFound = false;
             List<string> dirs = new List<string>();
             AddCustomDir(dirs, "zzz");
             string[] vendors = { "miHoYo", "Cognosphere" };
@@ -157,15 +196,26 @@ namespace MiniGetGachaLink
                 foreach (string logFile in logs)
                 {
                     if (!File.Exists(logFile)) continue;
+                    pathFound = true;
+                    log("[路径] 绝区零日志：" + logFile);
                     string text = ReadAllTextShared(logFile);
                     MatchCollection direct = Regex.Matches(text, @"https://[^\s""']+?/info");
                     if (direct.Count > 0) return direct[direct.Count - 1].Value;
 
                     Match match = Regex.Match(text, @"[A-Z]:[\\/].*?[\\/](?=ZenlessZoneZero_Data)", RegexOptions.IgnoreCase);
-                    if (!match.Success) continue;
-                    string dataPath = Path.Combine(match.Value, "ZenlessZoneZero_Data");
-                    foreach (string file in CacheCandidates(Path.Combine(dataPath, "webCaches")))
+                    if (!match.Success)
                     {
+                        log("[提示] 绝区零：日志中未识别到游戏数据目录");
+                        continue;
+                    }
+                    string dataPath = Path.Combine(match.Value, "ZenlessZoneZero_Data");
+                    string cacheDir = Path.Combine(dataPath, "webCaches");
+                    log("[路径] 绝区零缓存目录：" + cacheDir);
+                    List<string> files = CacheCandidates(cacheDir);
+                    if (files.Count == 0) log("[提示] 绝区零：缓存目录中未找到 data_2 文件");
+                    foreach (string file in files)
+                    {
+                        log("[路径] 绝区零缓存文件：" + file);
                         MatchCollection urls = Regex.Matches(ReadAllTextShared(file), @"https.+?authkey=.+?end_id=");
                         if (urls.Count > 0) return urls[urls.Count - 1].Value;
                     }
@@ -174,8 +224,9 @@ namespace MiniGetGachaLink
             return null;
         }
 
-        private static string ReadWuwaUrl()
+        private static string ReadWuwaUrl(Action<string> log, out bool pathFound)
         {
+            pathFound = false;
             List<string> dirs = new List<string>();
             string custom = CustomDir("wuwa");
             if (HasWuwaLogs(custom)) AddUnique(dirs, custom);
@@ -190,14 +241,18 @@ namespace MiniGetGachaLink
             }
             if (dirs.Count == 0)
             {
+                log("[扫描] 鸣潮：默认位置未找到日志，正在扫描其他目录...");
                 string scanned = ScanWuwaDrives();
                 if (HasWuwaLogs(scanned)) AddUnique(dirs, scanned);
             }
 
             foreach (string dir in dirs)
             {
+                pathFound = true;
+                log("[路径] 鸣潮游戏目录：" + dir);
                 foreach (string logFile in WuwaLogCandidates(dir))
                 {
+                    log("[路径] 鸣潮日志：" + logFile);
                     string text = DecryptWuwaLog(ReadAllBytesShared(logFile));
                     string link = ExtractWuwaLink(text);
                     if (!string.IsNullOrEmpty(link)) return link;
@@ -427,6 +482,110 @@ namespace MiniGetGachaLink
                 stream.CopyTo(memory);
                 return memory.ToArray();
             }
+        }
+    }
+
+    internal sealed class MainForm : Form
+    {
+        private readonly TextBox logBox;
+        private readonly Label statusLabel;
+        private readonly Button runButton;
+        private bool running;
+
+        internal MainForm()
+        {
+            Text = "MiniGetGachaLink";
+            StartPosition = FormStartPosition.CenterScreen;
+            Width = 680;
+            Height = 440;
+            MinimumSize = new Size(560, 340);
+            Font = new Font("Microsoft YaHei UI", 9F);
+
+            logBox = new TextBox();
+            logBox.Dock = DockStyle.Fill;
+            logBox.Multiline = true;
+            logBox.ReadOnly = true;
+            logBox.WordWrap = false;
+            logBox.ScrollBars = ScrollBars.Both;
+            logBox.BackColor = Color.White;
+
+            Panel bottom = new Panel();
+            bottom.Dock = DockStyle.Bottom;
+            bottom.Height = 44;
+            bottom.Padding = new Padding(10, 7, 10, 7);
+
+            statusLabel = new Label();
+            statusLabel.Dock = DockStyle.Fill;
+            statusLabel.TextAlign = ContentAlignment.MiddleLeft;
+            statusLabel.Text = "准备获取抽卡链接";
+
+            runButton = new Button();
+            runButton.Dock = DockStyle.Right;
+            runButton.Width = 104;
+            runButton.Text = "重新获取";
+            runButton.Click += delegate { Start(); };
+
+            bottom.Controls.Add(statusLabel);
+            bottom.Controls.Add(runButton);
+            Controls.Add(logBox);
+            Controls.Add(bottom);
+            Shown += delegate { Start(); };
+        }
+
+        private void Start()
+        {
+            if (running) return;
+            running = true;
+            runButton.Enabled = false;
+            statusLabel.Text = "正在获取抽卡链接...";
+            logBox.Clear();
+            Log("输出目录：" + Directory.GetCurrentDirectory());
+
+            Task.Factory.StartNew(delegate
+            {
+                try
+                {
+                    int count = Program.Generate(Log);
+                    SetCompleted(count);
+                }
+                catch (Exception ex)
+                {
+                    Log("运行失败：" + ex.Message);
+                    SetCompleted(-1);
+                }
+            });
+        }
+
+        internal void Log(string message)
+        {
+            if (IsDisposed || Disposing) return;
+            try
+            {
+                BeginInvoke((MethodInvoker)delegate
+                {
+                    if (logBox.IsDisposed) return;
+                    string time = DateTime.Now.ToString("HH:mm:ss");
+                    logBox.AppendText("[" + time + "] " + message + Environment.NewLine);
+                });
+            }
+            catch { }
+        }
+
+        private void SetCompleted(int count)
+        {
+            if (IsDisposed || Disposing) return;
+            try
+            {
+                BeginInvoke((MethodInvoker)delegate
+                {
+                    running = false;
+                    runButton.Enabled = true;
+                    statusLabel.Text = count >= 0
+                        ? "完成，共获取 " + count + " 个游戏的抽卡链接"
+                        : "运行失败，请查看日志";
+                });
+            }
+            catch { }
         }
     }
 }
