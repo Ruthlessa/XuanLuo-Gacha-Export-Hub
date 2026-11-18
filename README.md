@@ -7,7 +7,7 @@
 一款基于 Electron 的 Windows 桌面应用，支持四游戏抽卡记录管理与导出。
 
 [![Releases](https://img.shields.io/github/v/release/XLoDream/XuanLuo-Gacha-Export-Hub?label=最新版本&style=flat-square)](https://github.com/XLoDream/XuanLuo-Gacha-Export-Hub/releases/latest)
-[![License](https://img.shields.io/badge/许可证-禁止商用-important.svg?style=flat-square)](LICENSE)
+[![License](https://img.shields.io/badge/许可证-AGPL--3.0%20%2F%20GPL--3.0-blue.svg?style=flat-square)](LICENSE)
 
 </div>
 
@@ -145,4 +145,11 @@ npm run dist
 
 ## 许可证
 
-本软件仅供个人学习与游戏数据备份使用，**禁止用于任何商业用途**。详见 [LICENSE](LICENSE)。
+本项目采用双许可证发布，你可以任选其一：
+
+- [GNU Affero 通用公共许可证 v3.0（AGPL-3.0）](https://www.gnu.org/licenses/agpl-3.0.html)
+- [GNU 通用公共许可证 v3.0（GPL-3.0）](https://www.gnu.org/licenses/gpl-3.0.html)
+
+详见 [LICENSE](LICENSE)。第三方组件遵循各自许可证。
+
+本软件与 miHoYo / HoYoverse、库洛游戏等游戏厂商无任何隶属或授权关系，相关游戏名称与素材的版权归原作者所有。
