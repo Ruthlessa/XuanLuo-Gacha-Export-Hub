@@ -49,6 +49,16 @@
 
 ---
 
+## 🖼️ 界面预览
+
+| 总览 · 四款游戏数据一览 | 祈愿记录 · 卡池统计与保底进度 |
+| :---: | :---: |
+| <img src="example/1.png" alt="总览页面" width="100%" /> | <img src="example/2.png" alt="祈愿记录页面" width="100%" /> |
+| **崩铁 · 五星总览**（角色 / 光锥分类筛选） | **崩铁 · 配队推荐**（点击角色查看队伍） |
+| <img src="example/3.png" alt="崩铁五星总览" width="100%" /> | <img src="example/4.png" alt="崩铁配队推荐" width="100%" /> |
+
+---
+
 ## 📦 下载安装
 
 前往 [Releases](https://github.com/XLoDream/XuanLuo-Gacha-Export-Hub/releases) 下载：
